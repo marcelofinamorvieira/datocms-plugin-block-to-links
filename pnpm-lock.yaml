@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@datocms/cma-client-browser':
+        specifier: ^5.1.29
+        version: 5.1.29
       datocms-plugin-sdk:
         specifier: '*'
         version: 2.0.15
@@ -128,6 +131,9 @@ packages:
   '@babel/types@7.28.5':
     resolution: {integrity: sha512-qQ5m48eI/MFLQ5PxQj4PFaprjyCTLI37ElWMmNs0K8Lk3dVeOdNpB3ks8jc7yM5CDmVC73eMVk/trk3fgmrUpA==}
     engines: {node: '>=6.9.0'}
+
+  '@datocms/cma-client-browser@5.1.29':
+    resolution: {integrity: sha512-U1vlKmqaqWibr+CZYSngsoUtMbGvVeYrDqi9x3CJsc62TyT49fXzsWlAJ33yaBkzFPn6fXcIOGAjIAl3ASgwXg==}
 
   '@datocms/cma-client@5.1.29':
     resolution: {integrity: sha512-v+0IJ04WzJ8r+9lR/b7rzzohPdev0iR0iZz6Dy0Mf92rMKtzhhVpwFjR4w8dtIPELWgytc1rGr/T56ghOptTRA==}
@@ -944,6 +950,11 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@datocms/cma-client-browser@5.1.29':
+    dependencies:
+      '@datocms/cma-client': 5.1.29
+      '@datocms/rest-client-utils': 5.1.13
 
   '@datocms/cma-client@5.1.29':
     dependencies:
