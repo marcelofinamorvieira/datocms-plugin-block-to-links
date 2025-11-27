@@ -6,6 +6,9 @@ import {
   Spinner,
   SwitchField,
   TextField,
+  Form,
+  SelectField,
+  Section,
 } from 'datocms-react-ui';
 import { createClient } from '../utils/client';
 import { analyzeBlock } from '../utils/analyzer';
@@ -23,6 +26,11 @@ type BlockModel = {
   api_key: string;
 };
 
+type Option = {
+  label: string;
+  value: string;
+};
+
 type ConversionState =
   | { status: 'idle' }
   | { status: 'analyzing' }
@@ -37,6 +45,50 @@ type ConversionState =
       originalBlockApiKey?: string;
     } }
   | { status: 'error'; message: string };
+
+// Icons
+const Icons = {
+  Block: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+    </svg>
+  ),
+  Database: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+    </svg>
+  ),
+  Field: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 17l6-6"></path>
+      <path d="M4 7l6 6"></path>
+      <path d="M20 7h-6"></path>
+      <path d="M20 17h-6"></path>
+    </svg>
+  ),
+  Check: () => (
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={s.checkIcon}>
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+      <polyline points="22 4 12 14.01 9 11.01"></polyline>
+    </svg>
+  ),
+  Warning: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ff9800" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+      <line x1="12" y1="9" x2="12" y2="13"></line>
+      <line x1="12" y1="17" x2="12.01" y2="17"></line>
+    </svg>
+  ),
+  Code: () => (
+     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="16 18 22 12 16 6"></polyline>
+      <polyline points="8 6 2 12 8 18"></polyline>
+    </svg>
+  )
+};
 
 // Generate a default debug suffix using letters only (DatoCMS api_keys don't allow numbers)
 function generateDebugSuffix(): string {
@@ -54,6 +106,8 @@ export default function ConfigScreen({ ctx }: Props) {
   const [conversionState, setConversionState] = useState<ConversionState>({ status: 'idle' });
   const [blockModels, setBlockModels] = useState<BlockModel[]>([]);
   const [loadingBlocks, setLoadingBlocks] = useState(true);
+  const [originalBlockDeleted, setOriginalBlockDeleted] = useState(false);
+  const [deletingBlock, setDeletingBlock] = useState(false);
   
   // Debug mode state
   const [debugModeEnabled, setDebugModeEnabled] = useState(false);
@@ -207,75 +261,6 @@ export default function ConfigScreen({ ctx }: Props) {
           : `Successfully converted block to model "${result.newModelApiKey}"!`;
         
         await ctx.notice(successMessage);
-
-        // In debug mode, skip the deletion dialog entirely
-        if (!debugOptions.enabled) {
-          // Ask if user wants to delete the original block
-          const deleteOriginal = await ctx.openConfirm({
-            title: 'Delete Original Block?',
-            content:
-              'The conversion was successful. Do you want to delete the original block model? This is optional - you can keep it for reference or delete it later.',
-            choices: [
-              {
-                label: 'Delete Block',
-                value: 'delete',
-                intent: 'negative',
-              },
-              {
-                label: 'Keep Block',
-                value: 'keep',
-                intent: 'positive',
-              },
-            ],
-            cancel: {
-              label: 'Decide Later',
-              value: false,
-            },
-          });
-
-          if (deleteOriginal === 'delete') {
-            try {
-              await deleteOriginalBlock(client, selectedBlockId);
-              
-              // After deleting the original block, rename the new model to have the original name/api_key
-              if (result.newModelId && result.originalBlockName && result.originalBlockApiKey) {
-                const renameResult = await renameModelToOriginal(
-                  client,
-                  result.newModelId,
-                  result.originalBlockName,
-                  result.originalBlockApiKey
-                );
-                
-                if (renameResult.success) {
-                  // Update the displayed result with the final name/api_key
-                  setConversionState({
-                    status: 'success',
-                    result: {
-                      newModelId: result.newModelId,
-                      newModelApiKey: renameResult.finalApiKey,
-                      migratedRecords: result.migratedRecordsCount,
-                      convertedFields: result.convertedFieldsCount,
-                    },
-                  });
-                  
-                  if (renameResult.error) {
-                    await ctx.notice(`Original block deleted and model renamed to "${renameResult.finalName}". Note: ${renameResult.error}`);
-                  } else {
-                    await ctx.notice(`Original block deleted and model renamed to "${renameResult.finalName}" (${renameResult.finalApiKey})!`);
-                  }
-                } else {
-                  await ctx.notice(`Original block deleted, but could not rename model: ${renameResult.error}`);
-                }
-              } else {
-                await ctx.notice('Original block deleted successfully!');
-              }
-            } catch (error) {
-              await ctx.alert(`Failed to delete original block: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          }
-        } else {
-          console.log('[DEBUG MODE] Skipping deletion dialog - original block preserved');
-        }
       } else {
         setConversionState({
           status: 'error',
@@ -294,7 +279,66 @@ export default function ConfigScreen({ ctx }: Props) {
   const handleReset = useCallback(() => {
     setSelectedBlockId('');
     setConversionState({ status: 'idle' });
+    setOriginalBlockDeleted(false);
+    setDeletingBlock(false);
   }, []);
+
+  // Handle deleting the original block
+  const handleDeleteOriginalBlock = useCallback(async () => {
+    if (!client || conversionState.status !== 'success') return;
+
+    setDeletingBlock(true);
+    try {
+      await deleteOriginalBlock(client, selectedBlockId);
+      
+      const result = conversionState.result;
+      // After deleting the original block, rename the new model to have the original name/api_key
+      if (result.newModelId && result.originalBlockName && result.originalBlockApiKey) {
+        const renameResult = await renameModelToOriginal(
+          client,
+          result.newModelId,
+          result.originalBlockName,
+          result.originalBlockApiKey
+        );
+        
+        if (renameResult.success) {
+          // Update the displayed result with the final name/api_key
+          setConversionState({
+            status: 'success',
+            result: {
+              newModelId: result.newModelId,
+              newModelApiKey: renameResult.finalApiKey,
+              migratedRecords: result.migratedRecords,
+              convertedFields: result.convertedFields,
+            },
+          });
+          
+          if (renameResult.error) {
+            await ctx.notice(`Original block deleted and model renamed to "${renameResult.finalName}". Note: ${renameResult.error}`);
+          } else {
+            await ctx.notice(`Original block deleted and model renamed to "${renameResult.finalName}" (${renameResult.finalApiKey})!`);
+          }
+        } else {
+          await ctx.notice(`Original block deleted, but could not rename model: ${renameResult.error}`);
+        }
+      } else {
+        await ctx.notice('Original block deleted successfully!');
+      }
+      
+      setOriginalBlockDeleted(true);
+    } catch (error) {
+      await ctx.alert(`Failed to delete original block: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setDeletingBlock(false);
+    }
+  }, [client, selectedBlockId, conversionState, ctx]);
+
+  const blockOptions: Option[] = useMemo(() => {
+    return blockModels.map(block => ({
+      label: `${block.name} (${block.api_key})`,
+      value: block.id
+    }));
+  }, [blockModels]);
 
   // Check for access token
   if (!ctx.currentUserAccessToken) {
@@ -319,66 +363,8 @@ export default function ConfigScreen({ ctx }: Props) {
         <div className={s.header}>
           <h1 className={s.title}>Block to Links Converter</h1>
           <p className={s.description}>
-            Convert a block model into a regular model, transforming modular content fields
-            into link fields while preserving all your content data.
+            Convert modular content blocks into independent models with links, preserving all data.
           </p>
-        </div>
-
-        {/* Debug Mode Section */}
-        <div className={s.debugSection}>
-          <div className={s.debugHeader}>
-            <h3 className={s.debugTitle}>Development Mode</h3>
-          </div>
-          
-          <div className={s.debugControls}>
-            <SwitchField
-              id="debug-mode-toggle"
-              name="debug-mode-toggle"
-              label="Enable Debug Mode"
-              hint="When enabled, no deletions will occur and all created items will have a suffix for safe, repeatable testing"
-              value={debugModeEnabled}
-              onChange={(newValue) => setDebugModeEnabled(newValue)}
-            />
-            
-            {debugModeEnabled && (
-              <div className={s.debugSuffixField}>
-                <TextField
-                  id="debug-suffix"
-                  name="debug-suffix"
-                  label="Debug Suffix"
-                  hint="This suffix will be appended to all created models and fields"
-                  value={debugSuffix}
-                  onChange={(newValue) => setDebugSuffix(newValue)}
-                  placeholder="_dev_001"
-                />
-                <Button
-                  buttonType="muted"
-                  buttonSize="s"
-                  onClick={handleRegenerateSuffix}
-                >
-                  ↻ Regenerate
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {debugModeEnabled && (
-            <div className={s.debugBanner}>
-              <div className={s.debugBannerIcon}>🔧</div>
-              <div className={s.debugBannerContent}>
-                <strong>Debug Mode Active</strong>
-                <p>
-                  All operations are non-destructive. Created items will have suffix: <code>{debugSuffix}</code>
-                </p>
-                <ul className={s.debugBannerList}>
-                  <li>✓ Original fields and blocks will be preserved</li>
-                  <li>✓ New link fields will be created alongside originals</li>
-                  <li>✓ Verbose logging enabled in browser console</li>
-                  <li>✓ Safe to run multiple times</li>
-                </ul>
-              </div>
-            </div>
-          )}
         </div>
 
         {loadingBlocks ? (
@@ -389,37 +375,24 @@ export default function ConfigScreen({ ctx }: Props) {
         ) : blockModels.length === 0 ? (
           <div className={s.empty}>
             <p>No block models found in this project.</p>
-            <p>Create a block model first to use this plugin.</p>
+            <Button onClick={() => window.location.reload()}>Refresh</Button>
           </div>
         ) : (
-          <>
-            <div className={s.selector}>
-              <label htmlFor="block-model-select" style={{ display: 'block', marginBottom: '8px', fontWeight: 600 }}>
-                Select Block Model
-              </label>
-              <select
-                id="block-model-select"
-                value={selectedBlockId}
-                onChange={(e) => handleBlockSelect(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '8px 12px',
-                  fontSize: '14px',
-                  border: '1px solid var(--border-color, #ccc)',
-                  borderRadius: '4px',
-                  backgroundColor: 'white',
-                }}
-              >
-                <option value="">-- Select a block ({blockModels.length} available) --</option>
-                {blockModels.map((block) => (
-                  <option key={block.id} value={block.id}>
-                    {block.name} ({block.api_key})
-                  </option>
-                ))}
-              </select>
-              <p style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
-                Choose the block model you want to convert to a regular model
-              </p>
+          <Form>
+            <div className={s.card}>
+              <Section title="Block Selection">
+                <SelectField
+                  name="block"
+                  id="block"
+                  label="Choose a Block Model"
+                  hint="Select the modular block model you wish to convert."
+                  value={blockOptions.find(o => o.value === selectedBlockId)}
+                  onChange={(newValue) => handleBlockSelect(newValue ? (newValue as Option).value : '')}
+                  selectInputProps={{
+                    options: blockOptions,
+                  }}
+                />
+              </Section>
             </div>
 
             {/* Analysis State */}
@@ -433,151 +406,229 @@ export default function ConfigScreen({ ctx }: Props) {
             {/* Analysis Results */}
             {conversionState.status === 'analyzed' && (
               <div className={s.analysis}>
-                <h2>Analysis Results</h2>
+                <div className={s.card}>
+                  <Section title="Analysis Results">
+                    <div className={s.analysisGrid}>
+                      <div className={s.analysisItem}>
+                        <h3><span className={s.iconWrapper}><Icons.Block /></span> Block Details</h3>
+                        <div className={s.analysisStat}>
+                          <span className={s.statLabel}>Name</span>
+                          <span className={s.statValueMain}>{conversionState.analysis.block.name}</span>
+                        </div>
+                        <div className={s.analysisStat}>
+                          <span className={s.statLabel}>API Key</span>
+                          <span className={s.statValueCode}>{conversionState.analysis.block.apiKey}</span>
+                        </div>
+                      </div>
+                      <div className={s.analysisItem}>
+                        <h3><span className={s.iconWrapper}><Icons.Database /></span> Usage Impact</h3>
+                        <div className={s.analysisStat}>
+                          <span className={s.statLabel}>Records</span>
+                          <span className={s.statValueMain}>{conversionState.analysis.totalAffectedRecords}</span>
+                        </div>
+                        <div className={s.analysisStat}>
+                          <span className={s.statLabel}>Locations</span>
+                          <span className={s.statValueMain}>
+                            {conversionState.analysis.modularContentFields.length}
+                            {conversionState.analysis.modularContentFields.length === 0 && (
+                              <span className={s.warningIcon} title="Not used in any fields"> <Icons.Warning /></span>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
 
-                <div className={s.analysisSection}>
-                  <h3>Block: {conversionState.analysis.block.name}</h3>
-                  <p>API Key: <code>{conversionState.analysis.block.apiKey}</code></p>
-                </div>
+                    <div className={s.analysisSection}>
+                      <h3><span className={s.iconWrapper}><Icons.Field /></span> Content Fields ({conversionState.analysis.fields.length})</h3>
+                      <ul className={s.fieldList}>
+                        {conversionState.analysis.fields.map((field) => {
+                          const internalDomain = (ctx.site as { attributes?: { internal_domain?: string | null } })?.attributes?.internal_domain;
+                          const fieldUrl = internalDomain 
+                            ? `https://${internalDomain}/schema/item_types/${selectedBlockId}#f${field.id}`
+                            : undefined;
+                          
+                          return (
+                            <li key={field.id} className={s.fieldListItemClickable}>
+                              <a 
+                                href={fieldUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={s.fieldListLink}
+                              >
+                                <div className={s.fieldInfo}>
+                                  <strong>{field.label}</strong>
+                                  <span className={s.fieldApiKey}><Icons.Code /> {field.apiKey}</span>
+                                </div>
+                                <div className={s.fieldMeta}>
+                                  <span className={s.fieldType}>{field.fieldType}</span>
+                                  {field.localized && <span className={s.badge}>Localized</span>}
+                                </div>
+                              </a>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  </Section>
 
-                <div className={s.analysisSection}>
-                  <h3>Fields ({conversionState.analysis.fields.length})</h3>
-                  <ul className={s.fieldList}>
-                    {conversionState.analysis.fields.map((field) => (
-                      <li key={field.id}>
-                        <strong>{field.label}</strong> ({field.apiKey}) - {field.fieldType}
-                        {field.localized && <span className={s.badge}>Localized</span>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className={s.analysisSection}>
-                  <h3>Used In ({conversionState.analysis.modularContentFields.length} fields)</h3>
-                  {conversionState.analysis.modularContentFields.length === 0 ? (
-                    <p className={s.warning}>
-                      This block is not used in any modular content fields.
-                    </p>
-                  ) : (
-                    <ul className={s.fieldList}>
-                      {conversionState.analysis.modularContentFields.map((field) => (
-                        <li key={field.id}>
-                          <strong>{field.parentModelName}</strong>.{field.apiKey}
-                          {field.parentIsBlock && <span className={s.badgeNested}>Nested in Block</span>}
-                          {field.localized && <span className={s.badge}>Localized</span>}
-                          {field.allowedBlockIds.length > 1 && (
-                            <span className={s.badge}>
-                              {field.allowedBlockIds.length} block types
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-
-                <div className={s.analysisSection}>
-                  <h3>Impact</h3>
-                  <p>
-                    <strong>{conversionState.analysis.totalAffectedRecords}</strong> records will be affected
-                  </p>
-                </div>
-
-                {conversionState.analysis.modularContentFields.length > 0 && (
                   <div className={s.actions}>
-                    <Button
-                      onClick={handleConvert}
-                      buttonType={debugOptions.enabled ? 'primary' : 'negative'}
-                      buttonSize="l"
-                    >
-                      {debugOptions.enabled ? '🔧 Convert (Debug Mode)' : 'Convert Block to Model'}
-                    </Button>
                     <Button onClick={handleReset} buttonType="muted">
                       Cancel
                     </Button>
+                    <Button
+                      onClick={handleConvert}
+                      buttonType={debugOptions.enabled ? 'primary' : 'negative'}
+                      disabled={conversionState.analysis.modularContentFields.length === 0}
+                    >
+                      {debugOptions.enabled ? 'Convert (Debug Mode)' : 'Convert Block to Model'}
+                    </Button>
                   </div>
-                )}
+                </div>
               </div>
             )}
 
             {/* Converting State */}
             {conversionState.status === 'converting' && (
-              <div className={debugOptions.enabled ? s.convertingDebug : s.converting}>
-                {debugOptions.enabled && (
-                  <div className={s.convertingDebugBadge}>🔧 DEBUG MODE</div>
-                )}
-                <div className={s.progressHeader}>
-                  <Spinner size={24} />
-                  <h2>{debugOptions.enabled ? 'Converting (Debug)...' : 'Converting...'}</h2>
-                </div>
+              <div className={s.card}>
+                <div className={s.converting}>
+                  <div className={s.progressHeader}>
+                    <h2>{debugOptions.enabled ? 'Converting (Debug)...' : 'Converting...'}</h2>
+                  </div>
 
-                <div className={s.progressBar}>
-                  <div
-                    className={debugOptions.enabled ? s.progressFillDebug : s.progressFill}
-                    style={{ width: `${conversionState.progress.percentage}%` }}
-                  />
+                  <div className={s.progressContainer}>
+                    <div className={s.progressSteps}>
+                      <span>Step {conversionState.progress.currentStep} of {conversionState.progress.totalSteps}</span>
+                      <span>{Math.round(conversionState.progress.percentage)}%</span>
+                    </div>
+                    <div className={s.progressBar}>
+                      <div
+                        className={s.progressFill}
+                        style={{ width: `${conversionState.progress.percentage}%` }}
+                      />
+                    </div>
+                    <p className={s.currentStep}>
+                      {conversionState.progress.stepDescription}
+                    </p>
+                    {conversionState.progress.details && (
+                      <p className={s.progressDetails}>{conversionState.progress.details}</p>
+                    )}
+                  </div>
+                  
+                  <Spinner size={32} />
                 </div>
-
-                <p className={s.progressStep}>
-                  Step {conversionState.progress.currentStep} of {conversionState.progress.totalSteps}
-                </p>
-                <p className={s.progressDescription}>
-                  {conversionState.progress.stepDescription}
-                </p>
-                {conversionState.progress.details && (
-                  <p className={s.progressDetails}>{conversionState.progress.details}</p>
-                )}
-                {debugOptions.enabled && (
-                  <p className={s.progressDebugNote}>
-                    Check browser console for detailed logs
-                  </p>
-                )}
               </div>
             )}
 
             {/* Success State */}
             {conversionState.status === 'success' && (
-              <div className={debugOptions.enabled ? s.successDebug : s.success}>
-                <h2>{debugOptions.enabled ? '🔧 Debug Conversion Complete!' : '✓ Conversion Complete!'}</h2>
-                <div className={s.successDetails}>
-                  <p>
-                    <strong>New Model:</strong> {conversionState.result.newModelApiKey}
-                  </p>
-                  <p>
-                    <strong>Records Migrated:</strong> {conversionState.result.migratedRecords}
-                  </p>
-                  <p>
-                    <strong>Fields Converted:</strong> {conversionState.result.convertedFields}
-                  </p>
-                  {debugOptions.enabled && (
-                    <>
-                      <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid #ddd' }} />
-                      <p style={{ color: '#666', fontSize: '0.9em' }}>
-                        <strong>Debug Mode:</strong> Original fields and blocks preserved
+              <div className={s.card}>
+                <div className={s.success}>
+                  <div className={s.successIcon}><Icons.Check /></div>
+                  <h2 className={s.successTitle}>Conversion Complete!</h2>
+                  
+                  <div className={s.successStats}>
+                    <div className={s.statItem}>
+                      <span className={s.statValue}>{conversionState.result.migratedRecords}</span>
+                      <span className={s.statLabel}>Records Migrated</span>
+                    </div>
+                    <div className={s.statDivider} />
+                    <div className={s.statItem}>
+                      <span className={s.statValue}>{conversionState.result.convertedFields}</span>
+                      <span className={s.statLabel}>Fields Converted</span>
+                    </div>
+                  </div>
+
+                  <div className={s.successDetails}>
+                    <p>
+                      New Model Created: <strong>{conversionState.result.newModelApiKey}</strong>
+                    </p>
+                    {debugOptions.enabled && (
+                       <p className={s.progressDebugNote}>
+                        Debug Mode: Original fields preserved. Suffix: {debugSuffix}
                       </p>
-                      <p style={{ color: '#666', fontSize: '0.9em' }}>
-                        <strong>Suffix Used:</strong> <code>{debugSuffix}</code>
-                      </p>
-                    </>
-                  )}
+                    )}
+                  </div>
+
+                  <div className={s.actions} style={{ justifyContent: 'center' }}>
+                    {!debugOptions.enabled && !originalBlockDeleted && (
+                      <Button 
+                        onClick={handleDeleteOriginalBlock} 
+                        buttonType="negative"
+                        disabled={deletingBlock}
+                      >
+                        {deletingBlock ? 'Deleting...' : 'Delete Original Block'}
+                      </Button>
+                    )}
+                    <Button onClick={handleReset} buttonType="primary">
+                      Convert Another Block
+                    </Button>
+                  </div>
                 </div>
-                <Button onClick={handleReset} buttonType="primary">
-                  Convert Another Block
-                </Button>
               </div>
             )}
 
             {/* Error State */}
             {conversionState.status === 'error' && (
-              <div className={s.error}>
-                <h2>Error</h2>
-                <p>{conversionState.message}</p>
-                <Button onClick={handleReset} buttonType="primary">
-                  Try Again
-                </Button>
+              <div className={s.card}>
+                <div className={s.error}>
+                  <h2>Something went wrong</h2>
+                  <p>{conversionState.message}</p>
+                  <Button onClick={handleReset} buttonType="primary">
+                    Try Again
+                  </Button>
+                </div>
               </div>
             )}
-          </>
+
+            {/* Debug Mode Toggle */}
+            <div className={s.debugToggleWrapper}>
+              <div className={s.debugToggle}>
+                <SwitchField
+                  id="debug-mode-toggle"
+                  name="debug-mode-toggle"
+                  label="Advanced Mode"
+                  value={debugModeEnabled}
+                  onChange={(newValue) => setDebugModeEnabled(newValue)}
+                />
+              </div>
+            </div>
+
+            {debugModeEnabled && (
+              <div className={s.debugSection}>
+                <div className={s.debugHeader}>
+                   <span>🔧</span> Debug Configuration
+                </div>
+                
+                <TextField
+                  id="debug-suffix"
+                  name="debug-suffix"
+                  label="Debug Suffix"
+                  hint="Appended to created models/fields to prevent conflicts."
+                  value={debugSuffix}
+                  onChange={(newValue) => setDebugSuffix(newValue)}
+                  placeholder="_dev_001"
+                  textInputProps={{
+                    monospaced: true,
+                  }}
+                />
+                
+                <div style={{ marginTop: 'var(--spacing-m)' }}>
+                   <Button
+                    buttonType="muted"
+                    buttonSize="s"
+                    onClick={handleRegenerateSuffix}
+                  >
+                    Regenerate Suffix
+                  </Button>
+                </div>
+
+                <div className={s.debugBannerList} style={{ marginTop: 'var(--spacing-m)' }}>
+                  <p>• Non-destructive: original fields/blocks preserved</p>
+                  <p>• Verbose logging enabled in console</p>
+                </div>
+              </div>
+            )}
+          </Form>
         )}
       </div>
     </Canvas>
