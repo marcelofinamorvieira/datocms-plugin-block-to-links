@@ -547,7 +547,8 @@ async function migrateNestedBlockFieldData(
   targetBlockId: string,
   mapping: BlockMigrationMapping,
   isSingleValue: boolean,
-  availableLocales: string[]
+  availableLocales: string[],
+  recordsToPublish?: Set<string>
 ): Promise<void> {
 
   let recordCount = 0;
@@ -643,6 +644,10 @@ async function migrateNestedBlockFieldData(
           [rootFieldApiKey]: updateValue,
         });
         updatedCount++;
+        // Track this record for publishing
+        if (recordsToPublish) {
+          recordsToPublish.add(record.id);
+        }
       } catch (error) {
         console.error(`Failed to update record ${record.id} with nested data:`, error);
         throw error;
@@ -767,9 +772,16 @@ export async function convertBlockToModel(
   client: CMAClient,
   blockId: string,
   onProgress: ProgressCallback,
-  fullyReplace: boolean = false
+  fullyReplace: boolean = false,
+  publishAfterChanges: boolean = false
 ): Promise<ConversionResult> {
-  const totalSteps = fullyReplace ? 7 : 6;
+  // Calculate total steps: base steps + optional delete step + optional publish step
+  let totalSteps = 6; // Base: analyze, create model, migrate, convert, cleanup, done
+  if (fullyReplace) totalSteps++; // Delete step
+  if (publishAfterChanges) totalSteps++; // Publish step
+  
+  // Track record IDs that need publishing
+  const recordsToPublish = new Set<string>();
   let migratedRecordsCount = 0;
   let convertedFieldsCount = 0;
 
@@ -887,6 +899,12 @@ export async function convertBlockToModel(
       Object.assign(globalMapping, mapping);
     }
 
+    // Track newly created records for publishing
+    if (publishAfterChanges) {
+      for (const newRecordId of Object.values(globalMapping)) {
+        recordsToPublish.add(newRecordId);
+      }
+    }
 
     // Step 4: Convert modular content fields to links fields (includes data migration)
     onProgress({
@@ -915,7 +933,8 @@ export async function convertBlockToModel(
         globalMapping,
         nestedPaths,
         availableLocales,
-        fullyReplace
+        fullyReplace,
+        publishAfterChanges ? recordsToPublish : undefined
       );
       convertedFieldsCount++;
 
@@ -966,40 +985,90 @@ export async function convertBlockToModel(
           client,
           rootModelId,
           paths,
-          blockId
+          blockId,
+          publishAfterChanges ? recordsToPublish : undefined
         );
         rootModelIndex++;
       }
     }
 
-    // Step 6 or 7: Delete original block (if fully replacing)
+    // Track current step for dynamic step numbering
+    let currentStep = 6;
+
+    // Delete original block (if fully replacing)
     if (fullyReplace) {
       onProgress({
-        currentStep: 6,
+        currentStep,
         totalSteps,
         stepDescription: 'Deleting original block model...',
-        percentage: 90,
+        percentage: 80,
       });
 
       await deleteOriginalBlock(client, blockId);
-
-      onProgress({
-        currentStep: 7,
-        totalSteps,
-        stepDescription: 'Conversion complete!',
-        percentage: 100,
-        details: `Created model "${newModel.api_key}" with ${migratedRecordsCount} records, original block deleted`,
-      });
-    } else {
-      // Step 6: Done (without deletion)
-      onProgress({
-        currentStep: 6,
-        totalSteps,
-        stepDescription: 'Conversion complete!',
-        percentage: 100,
-        details: `Created model "${newModel.api_key}" with ${migratedRecordsCount} records`,
-      });
+      currentStep++;
     }
+
+    // Publish records (if publishAfterChanges is enabled)
+    if (publishAfterChanges && recordsToPublish.size > 0) {
+      onProgress({
+        currentStep,
+        totalSteps,
+        stepDescription: `Publishing ${recordsToPublish.size} records...`,
+        percentage: 90,
+      });
+
+      const recordIds = Array.from(recordsToPublish);
+      const batchSize = 10;
+      
+      for (let i = 0; i < recordIds.length; i += batchSize) {
+        const batch = recordIds.slice(i, i + batchSize);
+        
+        await Promise.all(
+          batch.map(async (recordId) => {
+            try {
+              await client.items.publish(recordId);
+            } catch (error) {
+              // Log but don't fail the whole operation if a single publish fails
+              console.warn(`Failed to publish record ${recordId}:`, error);
+            }
+          })
+        );
+
+        // Update progress
+        const progressPercent = 90 + (10 * Math.min(i + batchSize, recordIds.length)) / recordIds.length;
+        onProgress({
+          currentStep,
+          totalSteps,
+          stepDescription: `Publishing records... (${Math.min(i + batchSize, recordIds.length)}/${recordIds.length})`,
+          percentage: Math.min(progressPercent, 99),
+        });
+
+        // Small delay between batches for rate limiting
+        if (i + batchSize < recordIds.length) {
+          await delay(100);
+        }
+      }
+      currentStep++;
+    }
+
+    // Final step: Conversion complete
+    const completionDetails = [
+      `Created model "${newModel.api_key}" with ${migratedRecordsCount} records`,
+    ];
+    if (fullyReplace) {
+      completionDetails.push('original block deleted');
+    }
+    if (publishAfterChanges && recordsToPublish.size > 0) {
+      completionDetails.push(`${recordsToPublish.size} records published`);
+    }
+
+    onProgress({
+      currentStep,
+      totalSteps,
+      stepDescription: 'Conversion complete!',
+      percentage: 100,
+      details: completionDetails.join(', '),
+    });
 
     return {
       success: true,
@@ -1497,7 +1566,8 @@ async function migrateStructuredTextFieldData(
   isLocalized: boolean,
   targetBlockId: string,
   mapping: BlockMigrationMapping,
-  availableLocales: string[]
+  availableLocales: string[],
+  recordsToPublish?: Set<string>
 ): Promise<void> {
     
 
@@ -1564,6 +1634,10 @@ async function migrateStructuredTextFieldData(
           [fieldApiKey]: newValue,
         });
         updatedCount++;
+        // Track this record for publishing
+        if (recordsToPublish) {
+          recordsToPublish.add(record.id);
+        }
       } catch (error) {
       }
     }
@@ -1582,7 +1656,8 @@ async function migrateStructuredTextFieldDataPartial(
   isLocalized: boolean,
   targetBlockId: string,
   mapping: BlockMigrationMapping,
-  availableLocales: string[]
+  availableLocales: string[],
+  recordsToPublish?: Set<string>
 ): Promise<void> {
   for await (const record of client.items.listPagedIterator({
     filter: { type: modelId },
@@ -1638,6 +1713,10 @@ async function migrateStructuredTextFieldDataPartial(
         await client.items.update(record.id, {
           [fieldApiKey]: newValue,
         });
+        // Track this record for publishing
+        if (recordsToPublish) {
+          recordsToPublish.add(record.id);
+        }
       } catch (error) {
         console.error(`Failed to update record ${record.id} with partial structured text:`, error);
       }
@@ -1654,7 +1733,8 @@ async function migrateNestedStructuredTextFieldDataPartial(
   nestedPath: NestedBlockPath,
   fieldApiKey: string,
   targetBlockId: string,
-  mapping: BlockMigrationMapping
+  mapping: BlockMigrationMapping,
+  recordsToPublish?: Set<string>
 ): Promise<void> {
   // Query records from the ROOT model
   for await (const record of client.items.listPagedIterator({
@@ -1712,6 +1792,10 @@ async function migrateNestedStructuredTextFieldDataPartial(
         await client.items.update(record.id, {
           [rootFieldApiKey]: result.newValue,
         });
+        // Track this record for publishing
+        if (recordsToPublish) {
+          recordsToPublish.add(record.id);
+        }
       } catch (error) {
         console.error(`Failed to update record ${record.id} with nested partial structured text:`, error);
         throw error;
@@ -1741,7 +1825,8 @@ async function handleStructuredTextFieldConversion(
   mapping: BlockMigrationMapping,
   nestedPaths: NestedBlockPath[],
   availableLocales: string[],
-  fullyReplaceBlock: boolean
+  fullyReplaceBlock: boolean,
+  recordsToPublish?: Set<string>
 ): Promise<void> {
   
   const validators = currentField.validators as Record<string, unknown>;
@@ -1791,7 +1876,8 @@ async function handleStructuredTextFieldConversion(
           nestedPath,
           mcField.apiKey,
           blockIdToRemove,
-          mapping
+          mapping,
+          recordsToPublish
         );
       }
     } else {
@@ -1803,7 +1889,8 @@ async function handleStructuredTextFieldConversion(
         mcField.localized,
         blockIdToRemove,
         mapping,
-        availableLocales
+        availableLocales,
+        recordsToPublish
       );
     }
     // In partial mode, we're done - blocks remain, inlineItems added, validators allow both
@@ -1822,7 +1909,8 @@ async function handleStructuredTextFieldConversion(
         nestedPath,
         mcField.apiKey,
         blockIdToRemove,
-        mapping
+        mapping,
+        recordsToPublish
     );
     } else {
     }
@@ -1835,7 +1923,8 @@ async function handleStructuredTextFieldConversion(
       mcField.localized,
       blockIdToRemove,
       mapping,
-      availableLocales
+      availableLocales,
+      recordsToPublish
     );
   }
 
@@ -1870,7 +1959,8 @@ async function migrateNestedStructuredTextFieldData(
   nestedPath: NestedBlockPath,
   fieldApiKey: string,
   targetBlockId: string,
-  mapping: BlockMigrationMapping
+  mapping: BlockMigrationMapping,
+  recordsToPublish?: Set<string>
 ): Promise<void> {
     
 
@@ -1936,6 +2026,10 @@ async function migrateNestedStructuredTextFieldData(
           [rootFieldApiKey]: result.newValue,
         });
         updatedCount++;
+        // Track this record for publishing
+        if (recordsToPublish) {
+          recordsToPublish.add(record.id);
+        }
       } catch (error) {
         console.error(`Failed to update record ${record.id} with nested structured text:`, error);
         throw error;
@@ -1963,7 +2057,8 @@ async function convertModularContentToLinksField(
   mapping: BlockMigrationMapping,
   nestedPaths: NestedBlockPath[],
   availableLocales: string[],
-  fullyReplaceBlock: boolean
+  fullyReplaceBlock: boolean,
+  recordsToPublish?: Set<string>
 ): Promise<void> {
   const currentField = await client.fields.find(mcField.id);
   const originalLabel = currentField.label;
@@ -1995,7 +2090,8 @@ async function convertModularContentToLinksField(
       mapping,
       nestedPaths,
       availableLocales,
-      fullyReplaceBlock
+      fullyReplaceBlock,
+      recordsToPublish
     );
     return;
   }
@@ -2053,7 +2149,8 @@ async function convertModularContentToLinksField(
             existingLinksField.api_key,
             blockIdToRemove,
             mapping,
-            availableLocales
+            availableLocales,
+            recordsToPublish
     );
         } else {
         }
@@ -2065,7 +2162,8 @@ async function convertModularContentToLinksField(
           existingLinksField.api_key,
           mcField.localized,
           blockIdToRemove,
-          mapping
+          mapping,
+          recordsToPublish
     );
       }
     } else {
@@ -2109,7 +2207,8 @@ async function convertModularContentToLinksField(
             blockIdToRemove,
             mapping,
             isSingleBlock,
-            availableLocales
+            availableLocales,
+            recordsToPublish
     );
         } else {
         }
@@ -2123,7 +2222,8 @@ async function convertModularContentToLinksField(
           mcField.localized,
           blockIdToRemove,
           mapping,
-          isSingleBlock
+          isSingleBlock,
+          recordsToPublish
     );
       }
     }
@@ -2179,7 +2279,8 @@ async function convertModularContentToLinksField(
             existingLinksField.api_key,
             blockIdToRemove,
             mapping,
-            availableLocales
+            availableLocales,
+            recordsToPublish
     );
         }
       } else {
@@ -2190,7 +2291,8 @@ async function convertModularContentToLinksField(
           existingLinksField.api_key,
           mcField.localized,
           blockIdToRemove,
-          mapping
+          mapping,
+          recordsToPublish
     );
       }
       
@@ -2241,7 +2343,8 @@ async function convertModularContentToLinksField(
             blockIdToRemove,
             mapping,
             isSingleBlock,
-            availableLocales
+            availableLocales,
+            recordsToPublish
     );
         } else {
         }
@@ -2255,7 +2358,8 @@ async function convertModularContentToLinksField(
           mcField.localized,
           blockIdToRemove,
           mapping,
-          isSingleBlock
+          isSingleBlock,
+          recordsToPublish
     );
       }
 
@@ -2297,7 +2401,8 @@ async function migrateFieldData(
   isLocalized: boolean,
   targetBlockId: string,
   mapping: BlockMigrationMapping,
-  isSingleValue: boolean
+  isSingleValue: boolean,
+  recordsToPublish?: Set<string>
 ): Promise<void> {
 
   let recordCount = 0;
@@ -2340,6 +2445,10 @@ async function migrateFieldData(
         [newFieldApiKey]: newValue,
       });
       updatedCount++;
+      // Track this record for publishing
+      if (recordsToPublish) {
+        recordsToPublish.add(record.id);
+      }
     } catch (error) {
       console.error(`Failed to migrate data for record ${record.id}:`, error);
       // Continue with other records
@@ -2360,7 +2469,8 @@ async function migrateFieldDataAppend(
   linksFieldApiKey: string,
   isLocalized: boolean,
   targetBlockId: string,
-  mapping: BlockMigrationMapping
+  mapping: BlockMigrationMapping,
+  recordsToPublish?: Set<string>
 ): Promise<void> {
 
   let recordCount = 0;
@@ -2465,6 +2575,10 @@ async function migrateFieldDataAppend(
         [linksFieldApiKey]: newValue,
       });
       updatedCount++;
+      // Track this record for publishing
+      if (recordsToPublish) {
+        recordsToPublish.add(record.id);
+      }
     } catch (error) {
       console.error(`Failed to append data for record ${record.id}:`, error);
     }
@@ -2483,7 +2597,8 @@ async function migrateNestedBlockFieldDataAppend(
   linksFieldApiKey: string,
   targetBlockId: string,
   mapping: BlockMigrationMapping,
-  availableLocales: string[]
+  availableLocales: string[],
+  recordsToPublish?: Set<string>
 ): Promise<void> {
 
   let recordCount = 0;
@@ -2578,6 +2693,10 @@ async function migrateNestedBlockFieldDataAppend(
           [rootFieldApiKey]: updateValue,
         });
         updatedCount++;
+        // Track this record for publishing
+        if (recordsToPublish) {
+          recordsToPublish.add(record.id);
+        }
       } catch (error) {
         console.error(`Failed to update record ${record.id} with nested data:`, error);
         throw error;
@@ -2649,7 +2768,8 @@ async function cleanupNestedBlocksFromOriginalField(
   client: CMAClient,
   rootModelId: string,
   paths: NestedBlockPath[],
-  targetBlockId: string
+  targetBlockId: string,
+  recordsToPublish?: Set<string>
 ): Promise<void> {
 
   let recordCount = 0;
@@ -2690,6 +2810,10 @@ async function cleanupNestedBlocksFromOriginalField(
       try {
         await client.items.update(record.id, updates);
         updatedCount++;
+        // Track this record for publishing
+        if (recordsToPublish) {
+          recordsToPublish.add(record.id);
+        }
       } catch (error) {
         console.error(`Failed to cleanup record ${record.id}:`, error);
         throw error;
