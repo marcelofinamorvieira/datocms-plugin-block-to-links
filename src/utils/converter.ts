@@ -6,10 +6,9 @@ import type {
   BlockMigrationMapping,
   ModularContentFieldInfo,
   NestedBlockPath,
-  DebugOptions,
   GroupedBlockInstance,
 } from '../types';
-import { DEFAULT_DEBUG_OPTIONS } from '../types';
+
 import {
   analyzeBlock,
   buildNestedPathsToRootModels,
@@ -23,43 +22,17 @@ import {
   isStructuredTextValue,
   transformDastBlocksToLinks,
   extractLinksFromStructuredText,
+  addInlineItemsAlongsideBlocks,
 } from './dast';
 
-/**
- * Debug logging utility - only logs when debug mode is enabled
- */
-function debugLog(debug: DebugOptions, category: string, message: string, data?: unknown): void {
-  if (!debug.enabled || !debug.verboseLogging) return;
-  
-  const timestamp = new Date().toISOString().split('T')[1].slice(0, 12);
-  const prefix = `[DEBUG ${timestamp}] [${category}]`;
-  
-  if (data !== undefined) {
-    console.log(`${prefix} ${message}`, data);
-  } else {
-    console.log(`${prefix} ${message}`);
-  }
-}
 
 /**
  * Logs the start of a major operation
  */
-function debugLogSection(debug: DebugOptions, title: string): void {
-  if (!debug.enabled || !debug.verboseLogging) return;
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`[DEBUG] ${title}`);
-  console.log(`${'='.repeat(60)}`);
-}
 
 /**
  * Logs a sub-section within an operation
  */
-function debugLogSubSection(debug: DebugOptions, title: string): void {
-  if (!debug.enabled || !debug.verboseLogging) return;
-  console.log(`\n${'-'.repeat(40)}`);
-  console.log(`[DEBUG] ${title}`);
-  console.log(`${'-'.repeat(40)}`);
-}
 
 /**
  * Recursively sanitizes block data to remove properties that shouldn't be included
@@ -319,15 +292,13 @@ function extractBlocksFromValue(
  * @param path - The path segments to follow
  * @param pathIndex - Current index in the path
  * @param updateFn - Function to call when we reach the target block to update it
- * @param debug - Debug options for logging
  * @returns Updated field value and whether any updates were made
  */
 function traverseAndUpdateNestedBlocks(
   fieldValue: unknown,
   path: NestedBlockPath['path'],
   pathIndex: number,
-  updateFn: (blockData: Record<string, unknown>, locale: string | null) => Record<string, unknown>,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  updateFn: (blockData: Record<string, unknown>, locale: string | null) => Record<string, unknown>
 ): { updated: boolean; newValue: unknown } {
   if (pathIndex >= path.length || !fieldValue) {
     return { updated: false, newValue: fieldValue };
@@ -360,7 +331,6 @@ function traverseAndUpdateNestedBlocks(
           const updatedBlock = updateFn(blockObj, locale);
           newBlocks.push(updatedBlock);
           updated = true;
-          debugLog(debug, 'TRAVERSE', `Updated block at final level`, { locale });
         } else {
           // Need to go deeper - get the next field value from this block
           const nextStep = path[pathIndex + 1];
@@ -372,9 +342,8 @@ function traverseAndUpdateNestedBlocks(
               nestedFieldValue,
               path,
               pathIndex + 1,
-              updateFn,
-              debug
-            );
+              updateFn
+    );
 
             if (result.updated) {
               // Update the block with the new nested field value
@@ -578,15 +547,8 @@ async function migrateNestedBlockFieldData(
   targetBlockId: string,
   mapping: BlockMigrationMapping,
   isSingleValue: boolean,
-  availableLocales: string[],
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  availableLocales: string[]
 ): Promise<void> {
-  debugLog(debug, 'NESTED_MIGRATE', `Migrating nested field data`, {
-    rootModel: nestedPath.rootModelName,
-    path: nestedPath.path.map(p => p.fieldApiKey).join(' → '),
-    oldField: oldFieldApiKey,
-    newField: newFieldApiKey,
-  });
 
   let recordCount = 0;
   let updatedCount = 0;
@@ -598,15 +560,13 @@ async function migrateNestedBlockFieldData(
   // For a single-step path (field is directly in a root block), we update at that level
   // For multi-step paths, we need to stop at the parent block level
   const pathToParentBlock = nestedPath.path.slice(0, -1);
-  const fieldStep = nestedPath.path[nestedPath.path.length - 1];
   
-  debugLog(debug, 'NESTED_MIGRATE', `Path to parent: ${pathToParentBlock.map(p => p.fieldApiKey).join(' → ') || '(root)'}`);
-  debugLog(debug, 'NESTED_MIGRATE', `Field step: ${fieldStep.fieldApiKey} → ${newFieldApiKey}`);
 
   // Query records from the ROOT model (not the block)
   for await (const record of client.items.listPagedIterator({
     filter: { type: nestedPath.rootModelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     recordCount++;
 
@@ -615,30 +575,22 @@ async function migrateNestedBlockFieldData(
     const rootFieldValue = record[rootFieldApiKey];
 
     if (!rootFieldValue) {
-      debugLog(debug, 'NESTED_MIGRATE', `Record ${record.id}: No value in root field "${rootFieldApiKey}", skipping`);
       continue;
     }
 
     // Create the update function that will be called for PARENT blocks
     // This function reads the old field, extracts block IDs, maps them to record IDs, and sets the new field
-    const updateBlockFn = (blockData: Record<string, unknown>, locale: string | null): Record<string, unknown> => {
+    const updateBlockFn = (blockData: Record<string, unknown>, _locale: string | null): Record<string, unknown> => {
       // Get the old field value from the parent block (e.g., Hero Section's "socials" field)
       const oldValue = getNestedFieldValueFromBlock(blockData, oldFieldApiKey);
       
       if (!oldValue) {
-        debugLog(debug, 'NESTED_MIGRATE', `No value in field "${oldFieldApiKey}", skipping`);
         return blockData;
       }
 
       // Extract link IDs from the old value (the array of blocks in the old field)
       const newValue = extractLinksFromValue(oldValue, targetBlockId, mapping, isSingleValue);
 
-      debugLog(debug, 'NESTED_MIGRATE', `Extracted links for parent block field "${oldFieldApiKey}"`, { 
-        oldValueType: typeof oldValue,
-        oldValueIsArray: Array.isArray(oldValue),
-        newValue,
-        locale 
-      });
 
       // Set the new links field value in the parent block
       return setNestedFieldValueInBlock(blockData, newFieldApiKey, newValue);
@@ -652,18 +604,16 @@ async function migrateNestedBlockFieldData(
       result = traverseAndUpdateNestedBlocksAtLevel(
         rootFieldValue,
         nestedPath.path[0], // The first (and only) step - contains the parent blocks
-        updateBlockFn,
-        debug
-      );
+        updateBlockFn
+    );
     } else {
       // Multi-step path: we need to traverse to the parent block level first
       result = traverseAndUpdateNestedBlocks(
         rootFieldValue,
         pathToParentBlock,
         0,
-        updateBlockFn,
-        debug
-      );
+        updateBlockFn
+    );
     }
 
     if (result.updated) {
@@ -689,20 +639,17 @@ async function migrateNestedBlockFieldData(
           updateValue = completeLocalizedValue;
         }
         
-        debugLog(debug, 'NESTED_MIGRATE', `Record ${record.id}: Updating with migrated nested data`);
         await client.items.update(record.id, {
           [rootFieldApiKey]: updateValue,
         });
         updatedCount++;
       } catch (error) {
         console.error(`Failed to update record ${record.id} with nested data:`, error);
-        debugLog(debug, 'ERROR', `Record ${record.id}: Failed to update`, error);
         throw error;
       }
     }
   }
 
-  debugLog(debug, 'NESTED_MIGRATE', `Nested data migration complete: ${updatedCount}/${recordCount} records updated`);
 }
 
 /**
@@ -712,8 +659,7 @@ async function migrateNestedBlockFieldData(
 function traverseAndUpdateNestedBlocksAtLevel(
   fieldValue: unknown,
   step: NestedBlockPath['path'][0],
-  updateFn: (blockData: Record<string, unknown>, locale: string | null) => Record<string, unknown>,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  updateFn: (blockData: Record<string, unknown>, locale: string | null) => Record<string, unknown>
 ): { updated: boolean; newValue: unknown } {
   if (!fieldValue) {
     return { updated: false, newValue: fieldValue };
@@ -742,7 +688,6 @@ function traverseAndUpdateNestedBlocksAtLevel(
         const updatedBlock = updateFn(blockObj, locale);
         newBlocks.push(updatedBlock);
         updated = true;
-        debugLog(debug, 'TRAVERSE_LEVEL', `Updated block at level`, { blockTypeId, locale });
       } else {
         // Block type doesn't match - keep as is
         newBlocks.push(block);
@@ -822,22 +767,11 @@ export async function convertBlockToModel(
   client: CMAClient,
   blockId: string,
   onProgress: ProgressCallback,
-  debugOptions: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  fullyReplace: boolean = false
 ): Promise<ConversionResult> {
-  const totalSteps = 6;
+  const totalSteps = fullyReplace ? 7 : 6;
   let migratedRecordsCount = 0;
   let convertedFieldsCount = 0;
-
-  // Log debug mode status
-  if (debugOptions.enabled) {
-    debugLogSection(debugOptions, 'DEBUG MODE ENABLED');
-    debugLog(debugOptions, 'CONFIG', 'Debug options:', {
-      suffix: debugOptions.suffix,
-      skipDeletions: debugOptions.skipDeletions,
-      verboseLogging: debugOptions.verboseLogging,
-    });
-    console.log('[DEBUG] ⚠️  Running in DEBUG MODE - no deletions will occur, all created items will have suffix:', debugOptions.suffix);
-  }
 
   try {
     // Step 1: Analyze the block
@@ -848,33 +782,11 @@ export async function convertBlockToModel(
       percentage: 5,
     });
 
-    debugLogSubSection(debugOptions, 'Step 1: Analyzing Block');
-    debugLog(debugOptions, 'ANALYSIS', `Starting analysis for block ID: ${blockId}`);
 
     const analysis = await analyzeBlock(client, blockId);
 
-    debugLog(debugOptions, 'ANALYSIS', 'Block info:', {
-      name: analysis.block.name,
-      apiKey: analysis.block.apiKey,
-      fieldsCount: analysis.fields.length,
-    });
-    debugLog(debugOptions, 'ANALYSIS', 'Fields:', analysis.fields.map(f => ({
-      label: f.label,
-      apiKey: f.apiKey,
-      type: f.fieldType,
-      localized: f.localized,
-    })));
-    debugLog(debugOptions, 'ANALYSIS', `Modular content fields using this block: ${analysis.modularContentFields.length}`);
-    debugLog(debugOptions, 'ANALYSIS', 'Modular content fields:', analysis.modularContentFields.map(f => ({
-      parentModel: f.parentModelName,
-      field: f.apiKey,
-      isNestedInBlock: f.parentIsBlock,
-      allowedBlocks: f.allowedBlockIds.length,
-    })));
-    debugLog(debugOptions, 'ANALYSIS', `Total affected records: ${analysis.totalAffectedRecords}`);
 
     if (analysis.modularContentFields.length === 0) {
-      debugLog(debugOptions, 'ERROR', 'Block is not used in any modular content fields');
       return {
         success: false,
         migratedRecordsCount: 0,
@@ -890,20 +802,13 @@ export async function convertBlockToModel(
       blockId
     );
 
-    debugLog(debugOptions, 'ANALYSIS', `Built ${nestedPaths.length} nested paths to root models`);
-    nestedPaths.forEach((path, i) => {
-      debugLog(debugOptions, 'ANALYSIS', `Path ${i + 1}: ${path.rootModelName} → ${path.path.map(p => p.fieldApiKey).join(' → ')} (localized context: ${path.isInLocalizedContext})`);
-    });
-
     // Determine if any path is in a localized context
     const shouldLocalizeFields = nestedPaths.some(p => p.isInLocalizedContext);
-    debugLog(debugOptions, 'ANALYSIS', `Should localize fields: ${shouldLocalizeFields}`);
 
     // Fetch available locales from site settings
     // Always needed for structured text updates to avoid "removing locales" issues
     const site = await client.site.find();
     const availableLocales = site.locales;
-    debugLog(debugOptions, 'ANALYSIS', `Available locales: ${availableLocales.join(', ')}`)
 
     // Step 2: Create new model with same fields
     onProgress({
@@ -914,17 +819,11 @@ export async function convertBlockToModel(
       details: `Copying ${analysis.fields.length} fields${shouldLocalizeFields ? ' as localized' : ''}`,
     });
 
-    debugLogSubSection(debugOptions, 'Step 2: Creating New Model');
     if (shouldLocalizeFields) {
-      debugLog(debugOptions, 'MODEL', 'Block is used in localized context - all fields will be created as localized');
     }
 
-    const newModel = await createNewModelFromBlock(client, analysis, debugOptions, shouldLocalizeFields);
+    const newModel = await createNewModelFromBlock(client, analysis, shouldLocalizeFields);
 
-    debugLog(debugOptions, 'MODEL', 'New model created:', {
-      id: newModel.id,
-      apiKey: newModel.api_key,
-    });
 
     // Step 3: Migrate block content to new records
     onProgress({
@@ -935,7 +834,6 @@ export async function convertBlockToModel(
       details: `Processing ${nestedPaths.length} nested paths`,
     });
 
-    debugLogSubSection(debugOptions, 'Step 3: Migrating Block Content to Records');
 
     // For each nested path, migrate blocks and create mapping
     const globalMapping: BlockMigrationMapping = {};
@@ -949,16 +847,13 @@ export async function convertBlockToModel(
         percentage: 30 + (20 * i) / nestedPaths.length,
       });
 
-      debugLog(debugOptions, 'MIGRATE', `Processing path ${i + 1}/${nestedPaths.length}: ${nestedPath.rootModelName} (localized: ${nestedPath.isInLocalizedContext})`);
 
       let mapping: BlockMigrationMapping;
 
       if (nestedPath.isInLocalizedContext) {
         // Use grouped migration for localized contexts - merges locale data into single records
-        debugLog(debugOptions, 'MIGRATE', 'Using grouped migration for localized context');
         
         const groupedInstances = await getGroupedBlockInstances(client, nestedPath, blockId);
-        debugLog(debugOptions, 'MIGRATE', `Found ${groupedInstances.length} grouped block instances`);
         
         mapping = await migrateGroupedBlocksToRecords(
           client,
@@ -968,14 +863,12 @@ export async function convertBlockToModel(
           globalMapping,
           (count) => {
             migratedRecordsCount = count;
-          },
-          debugOptions
+          }
         );
       } else {
         // Use standard migration for non-localized contexts
         // BUT if shouldLocalizeFields is true, we need to wrap values in localized hashes
         // because the model was created with all fields localized
-        debugLog(debugOptions, 'MIGRATE', `Using standard migration for non-localized context (forceLocalized: ${shouldLocalizeFields})`);
         
         mapping = await migrateBlocksToRecordsNested(
           client,
@@ -986,20 +879,14 @@ export async function convertBlockToModel(
           (count) => {
             migratedRecordsCount = count;
           },
-          debugOptions,
           shouldLocalizeFields,  // Pass forceLocalizedFields flag
           availableLocales       // Pass available locales
         );
       }
 
       Object.assign(globalMapping, mapping);
-      debugLog(debugOptions, 'MIGRATE', `Mapping after path ${i + 1}:`, Object.keys(mapping).length + ' new mappings');
     }
 
-    debugLog(debugOptions, 'MIGRATE', 'Global mapping complete:', {
-      totalMappings: Object.keys(globalMapping).length,
-      sample: Object.entries(globalMapping).slice(0, 5).map(([k, v]) => `${k} → ${v}`),
-    });
 
     // Step 4: Convert modular content fields to links fields (includes data migration)
     onProgress({
@@ -1009,7 +896,6 @@ export async function convertBlockToModel(
       percentage: 55,
     });
 
-    debugLogSubSection(debugOptions, 'Step 4: Converting Fields');
 
     for (let i = 0; i < analysis.modularContentFields.length; i++) {
       const mcField = analysis.modularContentFields[i];
@@ -1020,11 +906,6 @@ export async function convertBlockToModel(
         percentage: 55 + (15 * i) / analysis.modularContentFields.length,
       });
 
-      debugLog(debugOptions, 'FIELD', `Converting field ${i + 1}/${analysis.modularContentFields.length}:`, {
-        parent: mcField.parentModelName,
-        field: mcField.apiKey,
-        type: mcField.fieldType,
-      });
 
       await convertModularContentToLinksField(
         client,
@@ -1034,35 +915,24 @@ export async function convertBlockToModel(
         globalMapping,
         nestedPaths,
         availableLocales,
-        debugOptions
+        fullyReplace
       );
       convertedFieldsCount++;
 
-      debugLog(debugOptions, 'FIELD', `Field converted successfully`);
     }
 
-    // Step 5: Cleanup nested block references (non-debug mode only)
-    // In debug mode, we skip this step entirely since:
-    // 1. Data has already been migrated to the new links field in Step 4
-    // 2. We want to preserve the original field and its blocks
-    // In non-debug mode, this step removes converted blocks from original fields
+    // Step 5: Cleanup nested block references
+    // This step removes converted blocks from original fields
     // when using partial replacement (keeping both modular content and links fields)
     onProgress({
       currentStep: 5,
       totalSteps,
-      stepDescription: debugOptions.skipDeletions 
-        ? 'Skipping nested cleanup (debug mode)...' 
-        : 'Cleaning up nested block references...',
+      stepDescription: 'Cleaning up nested block references...',
       percentage: 75,
     });
 
-    debugLogSubSection(debugOptions, 'Step 5: Nested Block Cleanup');
-
-    if (debugOptions.skipDeletions) {
-      debugLog(debugOptions, 'NESTED', 'Skipping nested block cleanup in debug mode - original blocks preserved');
-    } else {
-      // In non-debug mode, we may need to remove converted blocks from original fields
-      // This is only needed when there are remaining block types in the field
+    {
+            // This is only needed when there are remaining block types in the field
       
       // Group paths by root model to avoid updating the same records multiple times
       const pathsByRootModel = new Map<string, NestedBlockPath[]>();
@@ -1080,7 +950,6 @@ export async function convertBlockToModel(
         }
       }
 
-      debugLog(debugOptions, 'NESTED', `Found ${pathsByRootModel.size} root models needing nested cleanup`);
 
       let rootModelIndex = 0;
       for (const [rootModelId, paths] of pathsByRootModel) {
@@ -1092,42 +961,44 @@ export async function convertBlockToModel(
           percentage: 75 + (15 * rootModelIndex) / pathsByRootModel.size,
         });
 
-        debugLog(debugOptions, 'NESTED', `Cleaning up nested blocks in "${rootModelName}" (${paths.length} paths)`);
 
         await cleanupNestedBlocksFromOriginalField(
           client,
           rootModelId,
           paths,
-          blockId,
-          debugOptions
+          blockId
         );
         rootModelIndex++;
       }
     }
 
-    // Step 6: Done
-    onProgress({
-      currentStep: 6,
-      totalSteps,
-      stepDescription: 'Conversion complete!',
-      percentage: 100,
-      details: `Created model "${newModel.api_key}" with ${migratedRecordsCount} records`,
-    });
+    // Step 6 or 7: Delete original block (if fully replacing)
+    if (fullyReplace) {
+      onProgress({
+        currentStep: 6,
+        totalSteps,
+        stepDescription: 'Deleting original block model...',
+        percentage: 90,
+      });
 
-    debugLogSection(debugOptions, 'CONVERSION COMPLETE');
-    debugLog(debugOptions, 'RESULT', 'Conversion summary:', {
-      newModelId: newModel.id,
-      newModelApiKey: newModel.api_key,
-      migratedRecords: migratedRecordsCount,
-      convertedFields: convertedFieldsCount,
-      debugMode: debugOptions.enabled,
-      suffix: debugOptions.suffix,
-    });
+      await deleteOriginalBlock(client, blockId);
 
-    if (debugOptions.enabled) {
-      console.log('[DEBUG] ✅ Conversion completed in DEBUG MODE');
-      console.log('[DEBUG] 📋 Original fields/blocks were NOT deleted');
-      console.log('[DEBUG] 🏷️  All created items have suffix:', debugOptions.suffix);
+      onProgress({
+        currentStep: 7,
+        totalSteps,
+        stepDescription: 'Conversion complete!',
+        percentage: 100,
+        details: `Created model "${newModel.api_key}" with ${migratedRecordsCount} records, original block deleted`,
+      });
+    } else {
+      // Step 6: Done (without deletion)
+      onProgress({
+        currentStep: 6,
+        totalSteps,
+        stepDescription: 'Conversion complete!',
+        percentage: 100,
+        details: `Created model "${newModel.api_key}" with ${migratedRecordsCount} records`,
+      });
     }
 
     return {
@@ -1142,11 +1013,6 @@ export async function convertBlockToModel(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     
-    debugLogSection(debugOptions, 'CONVERSION FAILED');
-    debugLog(debugOptions, 'ERROR', 'Error details:', {
-      message: errorMessage,
-      stack: error instanceof Error ? error.stack : undefined,
-    });
 
     return {
       success: false,
@@ -1175,8 +1041,7 @@ function sanitizeAppearance(
  */
 function updateValidatorFieldReferences(
   validators: Record<string, unknown>,
-  fieldIdMapping: Record<string, string>,
-  debug: DebugOptions
+  fieldIdMapping: Record<string, string>
 ): Record<string, unknown> {
   const updatedValidators = { ...validators };
   
@@ -1191,14 +1056,11 @@ function updateValidatorFieldReferences(
         ...slugValidator,
         title_field_id: newTitleFieldId,
       };
-      debugLog(debug, 'VALIDATOR', `Updated slug_title_field.title_field_id: ${oldTitleFieldId} → ${newTitleFieldId}`);
     } else if (oldTitleFieldId) {
       // The referenced field hasn't been created yet or doesn't exist
       // This can happen if the field order is incorrect or the title field is missing
-      debugLog(debug, 'VALIDATOR', `Warning: slug_title_field references field ${oldTitleFieldId} which is not in the mapping yet`);
       // Remove the validator to avoid API errors - the field will work without it
       delete updatedValidators.slug_title_field;
-      debugLog(debug, 'VALIDATOR', `Removed slug_title_field validator to avoid API errors`);
     }
   }
   
@@ -1215,7 +1077,6 @@ function updateValidatorFieldReferences(
 async function createNewModelFromBlock(
   client: CMAClient,
   analysis: BlockAnalysis,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS,
   forceLocalizedFields: boolean = false
 ): Promise<{ id: string; api_key: string }> {
   // DatoCMS API key limit is 40 characters
@@ -1234,14 +1095,9 @@ async function createNewModelFromBlock(
     sanitizedBlockApiKey = sanitizedBlockApiKey + 's';
   }
   
-  // In debug mode, add the suffix to the base api_key
-  // Sanitize the debug suffix to remove any numbers (DatoCMS api_keys don't allow numbers)
-  const rawDebugSuffix = debug.enabled && debug.suffix ? debug.suffix : '';
-  const debugSuffix = rawDebugSuffix.replace(/[^a-z_]/gi, '').toLowerCase();
-  
   // Calculate how much space we have for the base api_key
   // We need room for: {base}_conv{suffix} or {base}_conv{suffix}_{counter}
-  const suffixPart = `_conv${debugSuffix}`;
+  const suffixPart = `_conv`;
   const maxBaseLength = API_KEY_MAX_LENGTH - suffixPart.length - 3; // -3 for potential counter "_99"
   
   // Truncate the base api_key if needed
@@ -1251,8 +1107,7 @@ async function createNewModelFromBlock(
   
   const baseApiKey = `${truncatedBlockApiKey}${suffixPart}`;
   const baseName = analysis.block.name.replace(/[^\w\s-]/g, '').trim() || 'Converted Block';
-  const debugNameSuffix = debug.enabled && debug.suffix ? ` ${debug.suffix}` : '';
-
+  
   const existingModels = await client.itemTypes.list();
 
   // Helper function to convert a counter number to a letter suffix (a, b, c, ... z, aa, ab, ...)
@@ -1277,11 +1132,9 @@ async function createNewModelFromBlock(
   };
 
   let finalApiKey = sanitizeApiKey(baseApiKey);
-  let finalName = `${baseName} (Converted)${debugNameSuffix}`;
+  let finalName = `${baseName} (Converted)`;
   let counter = 0;
 
-  debugLog(debug, 'MODEL', `Checking for existing models. Base api_key: "${baseApiKey}" -> sanitized: "${finalApiKey}" (length: ${finalApiKey.length}), base name: "${baseName}"`);
-  debugLog(debug, 'MODEL', `Existing models count: ${existingModels.length}`);
   
   // Check for uniqueness using the SANITIZED api_key
   while (
@@ -1289,14 +1142,11 @@ async function createNewModelFromBlock(
     existingModels.some((m) => m.name === finalName)
   ) {
     counter++;
-    const conflictingApiKey = existingModels.find((m) => m.api_key === finalApiKey);
-    const conflictingName = existingModels.find((m) => m.name === finalName);
     const letterSuffix = counterToLetterSuffix(counter);
-    debugLog(debug, 'MODEL', `Conflict found - api_key: ${conflictingApiKey?.api_key || 'none'}, name: ${conflictingName?.name || 'none'}, trying suffix: ${letterSuffix}`);
     
     // Use letter suffix instead of number to avoid being stripped by sanitization
     finalApiKey = sanitizeApiKey(`${baseApiKey}_${letterSuffix}`);
-    finalName = `${baseName} (Converted ${counter})${debugNameSuffix}`;
+    finalName = `${baseName} (Converted ${counter})`;
 
     if (counter > 100) {
       throw new Error('Could not find a unique model name/api_key after 100 attempts');
@@ -1313,9 +1163,7 @@ async function createNewModelFromBlock(
     throw new Error(`Invalid api_key generated: "${baseApiKey}" -> "${validatedApiKey}"`);
   }
   
-  debugLog(debug, 'MODEL', `Final api_key: "${validatedApiKey}" (length: ${validatedApiKey.length})`);
 
-  debugLog(debug, 'MODEL', `Creating model with name: "${finalName}", api_key: "${validatedApiKey}"`);
   
   const newModel = await client.itemTypes.create({
     name: finalName,
@@ -1326,7 +1174,6 @@ async function createNewModelFromBlock(
     collection_appearance: 'table',
   });
 
-  debugLog(debug, 'MODEL', `Model created with ID: ${newModel.id}`);
 
   let titleFieldId: string | null = null;
   
@@ -1354,8 +1201,7 @@ async function createNewModelFromBlock(
     if (field.validators && typeof field.validators === 'object') {
       updatedValidators = updateValidatorFieldReferences(
         field.validators as Record<string, unknown>,
-        fieldIdMapping,
-        debug
+        fieldIdMapping
       );
     }
 
@@ -1379,23 +1225,19 @@ async function createNewModelFromBlock(
     // skip the default value as the format would be incompatible
     if (field.defaultValue !== undefined) {
       if (forceLocalizedFields && !field.localized) {
-        debugLog(debug, 'FIELD', `Skipping default value for "${field.apiKey}" - format incompatible with forced localization`);
       } else {
         newFieldData.default_value = field.defaultValue;
       }
     }
 
-    debugLog(debug, 'FIELD', `Creating field: "${field.label}" (${field.apiKey}) - ${field.fieldType}${forceLocalizedFields ? ' [forced localized]' : ''}`);
     // Cast to expected type - field data is dynamically constructed from source field
     const newField = await client.fields.create(newModel.id, newFieldData as Parameters<typeof client.fields.create>[1]);
 
     // Store the mapping from old field ID to new field ID
     fieldIdMapping[field.id] = newField.id;
-    debugLog(debug, 'FIELD', `Field ID mapping: ${field.id} → ${newField.id}`);
 
     if (!titleFieldId && field.fieldType === 'string') {
       titleFieldId = newField.id;
-      debugLog(debug, 'FIELD', `Setting "${field.apiKey}" as title field`);
     }
   }
 
@@ -1405,7 +1247,6 @@ async function createNewModelFromBlock(
     });
   }
 
-  debugLog(debug, 'MODEL', `Model creation complete: ${newModel.api_key} with ${analysis.fields.length} fields`);
 
   return { id: newModel.id, api_key: newModel.api_key };
 }
@@ -1422,7 +1263,6 @@ async function migrateBlocksToRecordsNested(
   newModelId: string,
   existingMapping: BlockMigrationMapping,
   onMigrated: (count: number) => void,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS,
   forceLocalizedFields: boolean = false,
   availableLocales: string[] = []
 ): Promise<BlockMigrationMapping> {
@@ -1430,9 +1270,7 @@ async function migrateBlocksToRecordsNested(
   let migratedCount = Object.keys(existingMapping).length;
 
   // Get all block instances following the nested path
-  debugLog(debug, 'MIGRATE', `Fetching block instances for path: ${nestedPath.path.map(p => p.fieldApiKey).join(' → ')}`);
   const blockInstances = await getAllBlockInstancesNested(client, nestedPath, blockId);
-  debugLog(debug, 'MIGRATE', `Found ${blockInstances.length} block instances`);
 
   // Filter out blocks that were already migrated
   const uniqueBlocks = new Map<string, (typeof blockInstances)[0]>();
@@ -1443,8 +1281,6 @@ async function migrateBlocksToRecordsNested(
   }
 
   const blocksArray = Array.from(uniqueBlocks.values());
-  debugLog(debug, 'MIGRATE', `${blocksArray.length} unique blocks to migrate (${blockInstances.length - blocksArray.length} already mapped)`);
-  debugLog(debug, 'MIGRATE', `Force localized fields: ${forceLocalizedFields}`);
 
   await processBatch(
     blocksArray,
@@ -1460,19 +1296,10 @@ async function migrateBlocksToRecordsNested(
         let recordData: Record<string, unknown>;
         if (forceLocalizedFields && availableLocales.length > 0) {
           recordData = wrapFieldsInLocalizedHash(sanitizedData, availableLocales);
-          debugLog(debug, 'MIGRATE', `Wrapped fields in localized hash for block ${instance.blockId}`, {
-            originalKeys: Object.keys(sanitizedData),
-            locales: availableLocales,
-          });
         } else {
           recordData = sanitizedData;
         }
         
-        debugLog(debug, 'MIGRATE', `Creating record from block ${instance.blockId}`, {
-          rootRecordId: instance.rootRecordId,
-          locale: instance.locale,
-          dataKeys: Object.keys(recordData),
-        });
 
         const newRecord = await client.items.create({
           item_type: { type: 'item_type', id: newModelId },
@@ -1483,17 +1310,14 @@ async function migrateBlocksToRecordsNested(
         migratedCount++;
         onMigrated(migratedCount);
 
-        debugLog(debug, 'MIGRATE', `Block ${instance.blockId} → Record ${newRecord.id}`);
       } catch (error) {
         console.error(`Failed to migrate block ${instance.blockId}:`, error);
-        debugLog(debug, 'ERROR', `Failed to migrate block ${instance.blockId}:`, error);
         throw error;
       }
     },
     200
   );
 
-  debugLog(debug, 'MIGRATE', `Migration complete: ${Object.keys(mapping).length} new records created`);
   return mapping;
 }
 
@@ -1507,21 +1331,17 @@ async function migrateGroupedBlocksToRecords(
   newModelId: string,
   availableLocales: string[],
   existingMapping: BlockMigrationMapping,
-  onMigrated: (count: number) => void,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  onMigrated: (count: number) => void
 ): Promise<BlockMigrationMapping> {
   const mapping: BlockMigrationMapping = {};
   let migratedCount = Object.keys(existingMapping).length;
 
-  debugLog(debug, 'MIGRATE_GROUPED', `Starting grouped migration for ${groupedInstances.length} grouped instances`);
-  debugLog(debug, 'MIGRATE_GROUPED', `Available locales: ${availableLocales.join(', ')}`);
 
   // Filter out groups where all block IDs were already migrated
   const groupsToMigrate = groupedInstances.filter(group => {
     return !group.allBlockIds.every(id => existingMapping[id]);
   });
 
-  debugLog(debug, 'MIGRATE_GROUPED', `${groupsToMigrate.length} groups to migrate (${groupedInstances.length - groupsToMigrate.length} already mapped)`);
 
   await processBatch(
     groupsToMigrate,
@@ -1535,9 +1355,7 @@ async function migrateGroupedBlocksToRecords(
         const hasDefaultData = '__default__' in group.localeData;
         const defaultData = hasDefaultData ? group.localeData['__default__'] : null;
 
-        debugLog(debug, 'MIGRATE_GROUPED', `Group ${group.groupKey} localeData keys: ${JSON.stringify(Object.keys(group.localeData))}`);
         if (hasDefaultData) {
-          debugLog(debug, 'MIGRATE_GROUPED', `Found __default__ data, will duplicate across all locales`);
         }
 
         // Get all field keys from all locales
@@ -1585,12 +1403,6 @@ async function migrateGroupedBlocksToRecords(
         // Sanitize the localized field data
         const sanitizedData = sanitizeLocalizedFieldValuesForCreation(localizedFieldData);
 
-        debugLog(debug, 'MIGRATE_GROUPED', `Creating record from grouped block ${group.groupKey}`, {
-          rootRecordId: group.rootRecordId,
-          pathIndices: group.pathIndices,
-          localesPresent: Object.keys(group.localeData),
-          fieldsCount: Object.keys(sanitizedData).length,
-        });
 
         const newRecord = await client.items.create({
           item_type: { type: 'item_type', id: newModelId },
@@ -1608,17 +1420,14 @@ async function migrateGroupedBlocksToRecords(
         migratedCount++;
         onMigrated(migratedCount);
 
-        debugLog(debug, 'MIGRATE_GROUPED', `Group ${group.groupKey} → Record ${newRecord.id} (mapped ${group.allBlockIds.length} block IDs)`);
       } catch (error) {
         console.error(`Failed to migrate grouped block ${group.groupKey}:`, error);
-        debugLog(debug, 'ERROR', `Failed to migrate grouped block ${group.groupKey}:`, error);
         throw error;
       }
     },
     200
   );
 
-  debugLog(debug, 'MIGRATE_GROUPED', `Grouped migration complete: ${Object.keys(mapping).length} new mappings created`);
   return mapping;
 }
 
@@ -1688,21 +1497,10 @@ async function migrateStructuredTextFieldData(
   isLocalized: boolean,
   targetBlockId: string,
   mapping: BlockMigrationMapping,
-  availableLocales: string[],
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  availableLocales: string[]
 ): Promise<void> {
-  // In debug mode, we ADD links after blocks instead of replacing them
-  const debugMode = debug.skipDeletions;
-  if (debugMode) {
-    debugLog(debug, 'ST_MIGRATE', `DEBUG MODE: Will add links AFTER blocks for "${fieldApiKey}" - original blocks preserved`);
-  }
+    
 
-  debugLog(debug, 'ST_MIGRATE', `Migrating structured text field "${fieldApiKey}"`, {
-    modelId,
-    isLocalized,
-    mappingCount: Object.keys(mapping).length,
-    availableLocales,
-  });
 
   let recordCount = 0;
   let updatedCount = 0;
@@ -1710,11 +1508,11 @@ async function migrateStructuredTextFieldData(
   for await (const record of client.items.listPagedIterator({
     filter: { type: modelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     recordCount++;
     const fieldValue = record[fieldApiKey];
     if (!fieldValue) {
-      debugLog(debug, 'ST_MIGRATE', `Record ${record.id}: No value in "${fieldApiKey}", skipping`);
       continue;
     }
 
@@ -1733,11 +1531,10 @@ async function migrateStructuredTextFieldData(
         
         if (localeValue !== undefined) {
           if (isStructuredTextValue(localeValue)) {
-            const transformed = transformDastBlocksToLinks(localeValue, targetBlockId, mapping, debugMode);
+            const transformed = transformDastBlocksToLinks(localeValue, targetBlockId, mapping);
             if (transformed) {
               localizedValue[locale] = transformed;
               hasChanges = true;
-              debugLog(debug, 'ST_MIGRATE', `Record ${record.id}[${locale}]: Transformed DAST (debug=${debugMode})`);
             } else {
               localizedValue[locale] = localeValue;
             }
@@ -1754,11 +1551,10 @@ async function migrateStructuredTextFieldData(
       newValue = localizedValue;
     } else if (isStructuredTextValue(fieldValue)) {
       // Non-localized field
-      const transformed = transformDastBlocksToLinks(fieldValue, targetBlockId, mapping, debugMode);
+      const transformed = transformDastBlocksToLinks(fieldValue, targetBlockId, mapping);
       if (transformed) {
         newValue = transformed;
         hasChanges = true;
-        debugLog(debug, 'ST_MIGRATE', `Record ${record.id}: Transformed DAST (debug=${debugMode})`);
       }
     }
 
@@ -1768,14 +1564,160 @@ async function migrateStructuredTextFieldData(
           [fieldApiKey]: newValue,
         });
         updatedCount++;
-        debugLog(debug, 'ST_MIGRATE', `Record ${record.id}: Updated successfully`);
       } catch (error) {
-        debugLog(debug, 'ERROR', `Record ${record.id}: Failed to update`, error);
       }
     }
   }
 
-  debugLog(debug, 'ST_MIGRATE', `Structured text migration complete: ${updatedCount}/${recordCount} records updated`);
+}
+
+/**
+ * Migrates structured text field data for PARTIAL mode.
+ * Adds inlineItem nodes alongside existing blocks (keeps blocks in place).
+ */
+async function migrateStructuredTextFieldDataPartial(
+  client: CMAClient,
+  modelId: string,
+  fieldApiKey: string,
+  isLocalized: boolean,
+  targetBlockId: string,
+  mapping: BlockMigrationMapping,
+  availableLocales: string[]
+): Promise<void> {
+  for await (const record of client.items.listPagedIterator({
+    filter: { type: modelId },
+    nested: true,
+    version: 'current', // Fetch draft version to get latest changes
+  })) {
+    const fieldValue = record[fieldApiKey];
+    if (!fieldValue) {
+      continue;
+    }
+
+    let newValue: unknown = null;
+    let hasChanges = false;
+
+    if (isLocalized && typeof fieldValue === 'object' && !Array.isArray(fieldValue)) {
+      // Localized field - process each locale
+      const localizedValue: Record<string, unknown> = {};
+      const sourceLocaleValues = fieldValue as Record<string, unknown>;
+      
+      for (const locale of availableLocales) {
+        const localeValue = sourceLocaleValues[locale];
+        
+        if (localeValue !== undefined) {
+          if (isStructuredTextValue(localeValue)) {
+            // Use addInlineItemsAlongsideBlocks instead of transformDastBlocksToLinks
+            const transformed = addInlineItemsAlongsideBlocks(localeValue, targetBlockId, mapping);
+            if (transformed) {
+              localizedValue[locale] = transformed;
+              hasChanges = true;
+            } else {
+              localizedValue[locale] = localeValue;
+            }
+          } else {
+            localizedValue[locale] = localeValue;
+          }
+        } else {
+          localizedValue[locale] = null;
+        }
+      }
+      
+      newValue = localizedValue;
+    } else if (isStructuredTextValue(fieldValue)) {
+      // Non-localized field
+      const transformed = addInlineItemsAlongsideBlocks(fieldValue, targetBlockId, mapping);
+      if (transformed) {
+        newValue = transformed;
+        hasChanges = true;
+      }
+    }
+
+    if (hasChanges && newValue) {
+      try {
+        await client.items.update(record.id, {
+          [fieldApiKey]: newValue,
+        });
+      } catch (error) {
+        console.error(`Failed to update record ${record.id} with partial structured text:`, error);
+      }
+    }
+  }
+}
+
+/**
+ * Migrates nested structured text field data for PARTIAL mode.
+ * Adds inlineItem nodes alongside existing blocks (keeps blocks in place).
+ */
+async function migrateNestedStructuredTextFieldDataPartial(
+  client: CMAClient,
+  nestedPath: NestedBlockPath,
+  fieldApiKey: string,
+  targetBlockId: string,
+  mapping: BlockMigrationMapping
+): Promise<void> {
+  // Query records from the ROOT model
+  for await (const record of client.items.listPagedIterator({
+    filter: { type: nestedPath.rootModelId },
+    nested: true,
+    version: 'current', // Fetch draft version to get latest changes
+  })) {
+    // Get the root field value (first step in the path)
+    const rootFieldApiKey = nestedPath.path[0].fieldApiKey;
+    const rootFieldValue = record[rootFieldApiKey];
+
+    if (!rootFieldValue) {
+      continue;
+    }
+
+    // Create the update function that will be called for parent blocks
+    const updateBlockFn = (blockData: Record<string, unknown>, _locale: string | null): Record<string, unknown> => {
+      const stValue = getNestedFieldValueFromBlock(blockData, fieldApiKey);
+      
+      if (!stValue || !isStructuredTextValue(stValue)) {
+        return blockData;
+      }
+
+      // Use addInlineItemsAlongsideBlocks instead of transformDastBlocksToLinks
+      const transformed = addInlineItemsAlongsideBlocks(stValue, targetBlockId, mapping);
+      if (transformed) {
+        return setNestedFieldValueInBlock(blockData, fieldApiKey, transformed);
+      }
+
+      return blockData;
+    };
+
+    // Use the same traversal logic as migrateNestedStructuredTextFieldData
+    const pathToParentBlock = nestedPath.path.slice(0, -1);
+    
+    let result: { updated: boolean; newValue: unknown };
+
+    if (pathToParentBlock.length === 0) {
+      result = traverseAndUpdateNestedBlocksAtLevel(
+        rootFieldValue,
+        nestedPath.path[0],
+        updateBlockFn
+    );
+    } else {
+      result = traverseAndUpdateNestedBlocks(
+        rootFieldValue,
+        pathToParentBlock,
+        0,
+        updateBlockFn
+    );
+    }
+
+    if (result.updated) {
+      try {
+        await client.items.update(record.id, {
+          [rootFieldApiKey]: result.newValue,
+        });
+      } catch (error) {
+        console.error(`Failed to update record ${record.id} with nested partial structured text:`, error);
+        throw error;
+      }
+    }
+  }
 }
 
 /**
@@ -1784,6 +1726,10 @@ async function migrateStructuredTextFieldData(
  * 1. Keep the same field type (structured_text)
  * 2. Transform the DAST document in-place to replace block nodes with inlineItem nodes
  * 3. Update validators to remove the block type and add the new model as a linkable type
+ * 
+ * @param fullyReplaceBlock - When true, transforms DAST and removes block type from validators.
+ *                            When false (partial mode), only adds link type to validators,
+ *                            leaving blocks in place for manual conversion later.
  */
 async function handleStructuredTextFieldConversion(
   client: CMAClient,
@@ -1795,9 +1741,8 @@ async function handleStructuredTextFieldConversion(
   mapping: BlockMigrationMapping,
   nestedPaths: NestedBlockPath[],
   availableLocales: string[],
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  fullyReplaceBlock: boolean
 ): Promise<void> {
-  debugLog(debug, 'ST_CONVERT', `Converting structured text field "${mcField.apiKey}" in "${mcField.parentModelName}"`);
   
   const validators = currentField.validators as Record<string, unknown>;
 
@@ -1818,7 +1763,6 @@ async function handleStructuredTextFieldConversion(
       ...currentLinksValidator,
       item_types: [...existingLinkTypes, newModelId],
     };
-    debugLog(debug, 'ST_CONVERT', `Phase 1: Adding new model ${newModelId} to allowed link types`);
   }
 
   // IMPORTANT: Always preserve the block type during data migration
@@ -1826,18 +1770,45 @@ async function handleStructuredTextFieldConversion(
   if (currentBlocksValidator) {
     phase1Validators.structured_text_blocks = currentBlocksValidator;
   }
-  debugLog(debug, 'ST_CONVERT', `Phase 1: Keeping block type in validators during data migration`, {
-    blockTypes: currentBlocksValidator?.item_types,
-  });
 
   // Apply Phase 1 validator update
-  debugLog(debug, 'ST_CONVERT', `Applying Phase 1 validators`, {
-    newLinkTypes: (phase1Validators.structured_text_links as { item_types?: string[] })?.item_types,
-  });
 
   await client.fields.update(mcField.id, {
     validators: phase1Validators,
   });
+
+  // PARTIAL MODE: When fullyReplaceBlock is false, we add the link type to validators
+  // AND add inlineItem nodes alongside the blocks (keeping blocks in place).
+  if (!fullyReplaceBlock) {
+    // Phase 1.5: Add inlineItem nodes alongside blocks in the DAST
+    // This must happen AFTER Phase 1 validator update so DatoCMS accepts the inlineItem nodes
+    if (mcField.parentIsBlock) {
+      // Field is inside a block - need to use nested migration
+      const nestedPath = findNestedPathForField(nestedPaths, mcField);
+      if (nestedPath) {
+        await migrateNestedStructuredTextFieldDataPartial(
+          client,
+          nestedPath,
+          mcField.apiKey,
+          blockIdToRemove,
+          mapping
+        );
+      }
+    } else {
+      // Field is in a root model - use standard migration
+      await migrateStructuredTextFieldDataPartial(
+        client,
+        mcField.parentModelId,
+        mcField.apiKey,
+        mcField.localized,
+        blockIdToRemove,
+        mapping,
+        availableLocales
+      );
+    }
+    // In partial mode, we're done - blocks remain, inlineItems added, validators allow both
+    return;
+  }
 
   // PHASE 2: Migrate the DAST data (transform blocks to inlineItems)
   // This must happen AFTER Phase 1 validator update, otherwise DatoCMS will reject the records
@@ -1846,21 +1817,17 @@ async function handleStructuredTextFieldConversion(
     // Field is inside a block - need to use nested migration
     const nestedPath = findNestedPathForField(nestedPaths, mcField);
     if (nestedPath) {
-      debugLog(debug, 'ST_CONVERT', `Phase 2: Using nested migration for block field`);
       await migrateNestedStructuredTextFieldData(
         client,
         nestedPath,
         mcField.apiKey,
         blockIdToRemove,
-        mapping,
-        debug
-      );
+        mapping
+    );
     } else {
-      debugLog(debug, 'ST_CONVERT', `Warning: Could not find nested path for block field, skipping data migration`);
     }
   } else {
     // Field is in a root model - use standard migration
-    debugLog(debug, 'ST_CONVERT', `Phase 2: Migrating DAST data for root model field`);
     await migrateStructuredTextFieldData(
       client,
       mcField.parentModelId,
@@ -1868,43 +1835,30 @@ async function handleStructuredTextFieldConversion(
       mcField.localized,
       blockIdToRemove,
       mapping,
-      availableLocales,
-      debug
+      availableLocales
     );
   }
 
-  // PHASE 3: Now remove the block type from validators (only if NOT in debug mode)
+  // PHASE 3: Now remove the block type from validators
   // The blocks have been transformed to inlineItems, so they no longer need to be valid
-  if (!debug.skipDeletions) {
-    const phase3Validators: Record<string, unknown> = { ...phase1Validators };
-    
-    if (remainingBlockIds.length > 0) {
-      phase3Validators.structured_text_blocks = {
-        ...currentBlocksValidator,
-        item_types: remainingBlockIds,
-      };
-    } else {
-      // No remaining blocks - set empty
-      phase3Validators.structured_text_blocks = {
-        ...currentBlocksValidator,
-        item_types: [],
-      };
-    }
-    
-    debugLog(debug, 'ST_CONVERT', `Phase 3: Removing block type ${blockIdToRemove} from allowed blocks`, {
-      remainingBlockIds,
-    });
-    
-    await client.fields.update(mcField.id, {
-      validators: phase3Validators,
-    });
+  const phase3Validators: Record<string, unknown> = { ...phase1Validators };
+  
+  if (remainingBlockIds.length > 0) {
+    phase3Validators.structured_text_blocks = {
+      ...currentBlocksValidator,
+      item_types: remainingBlockIds,
+    };
   } else {
-    debugLog(debug, 'ST_CONVERT', `DEBUG MODE: Skipping Phase 3 - keeping block type in validators`, {
-      originalBlockTypes: currentBlocksValidator?.item_types,
-    });
+    // No remaining blocks - set empty
+    phase3Validators.structured_text_blocks = {
+      ...currentBlocksValidator,
+      item_types: [],
+    };
   }
-
-  debugLog(debug, 'ST_CONVERT', `Structured text field conversion complete for "${mcField.apiKey}"`);
+  
+  await client.fields.update(mcField.id, {
+    validators: phase3Validators,
+  });
 }
 
 /**
@@ -1916,20 +1870,10 @@ async function migrateNestedStructuredTextFieldData(
   nestedPath: NestedBlockPath,
   fieldApiKey: string,
   targetBlockId: string,
-  mapping: BlockMigrationMapping,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  mapping: BlockMigrationMapping
 ): Promise<void> {
-  // In debug mode, we ADD links after blocks instead of replacing them
-  const debugMode = debug.skipDeletions;
-  if (debugMode) {
-    debugLog(debug, 'ST_NESTED', `DEBUG MODE: Will add links AFTER blocks for nested field "${fieldApiKey}" - original blocks preserved`);
-  }
+    
 
-  debugLog(debug, 'ST_NESTED', `Migrating nested structured text field data`, {
-    rootModel: nestedPath.rootModelName,
-    path: nestedPath.path.map(p => p.fieldApiKey).join(' → '),
-    field: fieldApiKey,
-  });
 
   let recordCount = 0;
   let updatedCount = 0;
@@ -1938,6 +1882,7 @@ async function migrateNestedStructuredTextFieldData(
   for await (const record of client.items.listPagedIterator({
     filter: { type: nestedPath.rootModelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     recordCount++;
 
@@ -1950,16 +1895,15 @@ async function migrateNestedStructuredTextFieldData(
     }
 
     // Create the update function that will be called for parent blocks
-    const updateBlockFn = (blockData: Record<string, unknown>, locale: string | null): Record<string, unknown> => {
+    const updateBlockFn = (blockData: Record<string, unknown>, _locale: string | null): Record<string, unknown> => {
       const stValue = getNestedFieldValueFromBlock(blockData, fieldApiKey);
       
       if (!stValue || !isStructuredTextValue(stValue)) {
         return blockData;
       }
 
-      const transformed = transformDastBlocksToLinks(stValue, targetBlockId, mapping, debugMode);
+      const transformed = transformDastBlocksToLinks(stValue, targetBlockId, mapping);
       if (transformed) {
-        debugLog(debug, 'ST_NESTED', `Transformed DAST for nested field (debug=${debugMode})`, { locale });
         return setNestedFieldValueInBlock(blockData, fieldApiKey, transformed);
       }
 
@@ -1975,17 +1919,15 @@ async function migrateNestedStructuredTextFieldData(
       result = traverseAndUpdateNestedBlocksAtLevel(
         rootFieldValue,
         nestedPath.path[0],
-        updateBlockFn,
-        debug
-      );
+        updateBlockFn
+    );
     } else {
       result = traverseAndUpdateNestedBlocks(
         rootFieldValue,
         pathToParentBlock,
         0,
-        updateBlockFn,
-        debug
-      );
+        updateBlockFn
+    );
     }
 
     if (result.updated) {
@@ -2001,7 +1943,6 @@ async function migrateNestedStructuredTextFieldData(
     }
   }
 
-  debugLog(debug, 'ST_NESTED', `Nested structured text migration complete: ${updatedCount}/${recordCount} records updated`);
 }
 
 /**
@@ -2010,6 +1951,9 @@ async function migrateNestedStructuredTextFieldData(
  * 
  * For structured_text fields, transforms the DAST in-place and updates validators
  * rather than creating a separate links field.
+ * 
+ * @param fullyReplaceBlock - When true, transforms data and removes block type from validators.
+ *                            When false (partial mode), only adds link type to validators.
  */
 async function convertModularContentToLinksField(
   client: CMAClient,
@@ -2019,7 +1963,7 @@ async function convertModularContentToLinksField(
   mapping: BlockMigrationMapping,
   nestedPaths: NestedBlockPath[],
   availableLocales: string[],
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  fullyReplaceBlock: boolean
 ): Promise<void> {
   const currentField = await client.fields.find(mcField.id);
   const originalLabel = currentField.label;
@@ -2035,18 +1979,7 @@ async function convertModularContentToLinksField(
   // Determine if this is a single_block field - use 'link' (singular) instead of 'links'
   const isSingleBlock = mcField.fieldType === 'single_block';
   const newFieldType = isSingleBlock ? 'link' : 'links';
-
-  // In debug mode, add suffix to field api_key
-  const debugSuffix = debug.enabled && debug.suffix ? debug.suffix : '';
-
-  debugLog(debug, 'FIELD', `Converting field "${originalApiKey}" in "${mcField.parentModelName}"`, {
-    fieldType: mcField.fieldType,
-    isSingleBlock,
-    newFieldType,
-    remainingBlockTypes: remainingBlockIds.length,
-    debugMode: debug.enabled,
-    skipDeletions: debug.skipDeletions,
-  });
+  
 
   // SPECIAL HANDLING FOR STRUCTURED TEXT FIELDS
   // For structured text, we transform the DAST in-place and update validators
@@ -2062,97 +1995,24 @@ async function convertModularContentToLinksField(
       mapping,
       nestedPaths,
       availableLocales,
-      debug
+      fullyReplaceBlock
     );
     return;
   }
 
   // Clean up any existing TEMP fields only (not the links field which may have data from previous conversions)
-  if (!debug.skipDeletions) {
-    const existingFields = await client.fields.list(mcField.parentModelId);
-    for (const field of existingFields) {
-      // Only clean up temp fields - NOT the actual links/link field which may have data
-      if (field.api_key === `${originalApiKey}_temp_links`) {
-        try {
-          debugLog(debug, 'FIELD', `Cleaning up existing temp field: ${field.api_key}`);
-          await client.fields.destroy(field.id);
-          await delay(300);
-        } catch (e) {
-          console.warn(`Could not clean up existing field ${field.api_key}:`, e);
-        }
+  const existingFields = await client.fields.list(mcField.parentModelId);
+  for (const field of existingFields) {
+    // Only clean up temp fields - NOT the actual links/link field which may have data
+    if (field.api_key === `${originalApiKey}_temp_links`) {
+      try {
+        await client.fields.destroy(field.id);
+        await delay(300);
+      } catch (e) {
+        console.warn(`Could not clean up existing field ${field.api_key}:`, e);
       }
     }
-  } else {
-    debugLog(debug, 'FIELD', '⚠️  Skipping cleanup of temp fields (debug mode)');
   }
-
-  // In debug mode, we always create a NEW field with suffix, never modify/delete the original
-  if (debug.skipDeletions) {
-    // DEBUG MODE: Create a new links field with suffix, keep original untouched
-    const newApiKey = `${originalApiKey}_links${debugSuffix}`;
-    
-    debugLog(debug, 'FIELD', `DEBUG MODE: Creating new links field: ${newApiKey} (original field preserved)`);
-    
-    const newLinksFieldData = {
-      label: `${originalLabel} (Links)${debugSuffix ? ` ${debugSuffix}` : ''}`,
-      api_key: newApiKey,
-      field_type: newFieldType,
-      localized: mcField.localized,
-      validators: isSingleBlock 
-        ? { item_item_type: { item_types: [newModelId] } }
-        : { items_item_type: { item_types: [newModelId] } },
-      appearance: {
-        editor: isSingleBlock ? 'link_embed' : 'links_embed',
-        parameters: {},
-        addons: [],
-      },
-      position: originalPosition + 1,
-      fieldset: originalFieldset || undefined,
-    } as Parameters<typeof client.fields.create>[1];
-    
-    const newLinksField = await client.fields.create(mcField.parentModelId, newLinksFieldData);
-    debugLog(debug, 'FIELD', `Created links field: ${newLinksField.api_key} (id: ${newLinksField.id})`);
-
-    // Migrate data to the new field - use nested migration if field is inside a block
-    if (mcField.parentIsBlock) {
-      // Field is inside a block - use nested migration
-      const nestedPath = findNestedPathForField(nestedPaths, mcField);
-      if (nestedPath) {
-        debugLog(debug, 'FIELD', `Using nested migration for block field`);
-        await migrateNestedBlockFieldData(
-          client,
-          nestedPath,
-          originalApiKey,
-          newLinksField.api_key,
-          blockIdToRemove,
-          mapping,
-          isSingleBlock,
-          availableLocales,
-          debug
-        );
-      } else {
-        debugLog(debug, 'FIELD', `Warning: Could not find nested path for block field, skipping data migration`);
-      }
-    } else {
-      // Field is in a root model - use standard migration
-      await migrateFieldData(
-        client,
-        mcField.parentModelId,
-        originalApiKey,
-        newLinksField.api_key,
-        mcField.localized,
-        blockIdToRemove,
-        mapping,
-        isSingleBlock,
-        debug
-      );
-    }
-
-    debugLog(debug, 'FIELD', `DEBUG MODE: Original field "${originalApiKey}" preserved, new field "${newApiKey}" created`);
-    return;
-  }
-
-  // NORMAL MODE (non-debug) - original behavior
   if (remainingBlockIds.length > 0 && !isSingleBlock) {
     // Check if a links field already exists from a previous conversion
     const existingFields = await client.fields.list(mcField.parentModelId);
@@ -2162,7 +2022,6 @@ async function convertModularContentToLinksField(
     
     if (existingLinksField) {
       // APPEND MODE: Links field already exists - add new model to validators and append data
-      debugLog(debug, 'FIELD', `Found existing links field "${existingLinksField.api_key}" - appending new model`);
       
       // Get current allowed item types and add the new model
       const currentValidators = existingLinksField.validators as Record<string, unknown>;
@@ -2172,7 +2031,6 @@ async function convertModularContentToLinksField(
       // Add new model ID if not already present
       if (!currentItemTypes.includes(newModelId)) {
         const updatedItemTypes = [...currentItemTypes, newModelId];
-        debugLog(debug, 'FIELD', `Updating validators: ${currentItemTypes.length} → ${updatedItemTypes.length} allowed types`);
         
         await client.fields.update(existingLinksField.id, {
           validators: {
@@ -2188,7 +2046,6 @@ async function convertModularContentToLinksField(
       if (mcField.parentIsBlock) {
         const nestedPath = findNestedPathForField(nestedPaths, mcField);
         if (nestedPath) {
-          debugLog(debug, 'FIELD', `Using nested migration to APPEND data for block field`);
           await migrateNestedBlockFieldDataAppend(
             client,
             nestedPath,
@@ -2196,11 +2053,9 @@ async function convertModularContentToLinksField(
             existingLinksField.api_key,
             blockIdToRemove,
             mapping,
-            availableLocales,
-            debug
-          );
+            availableLocales
+    );
         } else {
-          debugLog(debug, 'FIELD', `Warning: Could not find nested path for block field, skipping data migration`);
         }
       } else {
         await migrateFieldDataAppend(
@@ -2210,13 +2065,11 @@ async function convertModularContentToLinksField(
           existingLinksField.api_key,
           mcField.localized,
           blockIdToRemove,
-          mapping,
-          debug
-        );
+          mapping
+    );
       }
     } else {
       // CREATE MODE: No existing links field - create a new one
-      debugLog(debug, 'FIELD', 'Creating additional links field (keeping modular content for remaining blocks)');
       
       const newLinksFieldData: Parameters<typeof client.fields.create>[1] = {
         label: `${originalLabel} (Links)`,
@@ -2242,14 +2095,12 @@ async function convertModularContentToLinksField(
       }
       
       const newLinksField = await client.fields.create(mcField.parentModelId, newLinksFieldData);
-      debugLog(debug, 'FIELD', `Created links field: ${newLinksField.api_key}`);
 
       // Migrate data: read from old field, extract matching blocks, write link IDs to new field
       if (mcField.parentIsBlock) {
         // Field is inside a block - use nested migration
         const nestedPath = findNestedPathForField(nestedPaths, mcField);
         if (nestedPath) {
-          debugLog(debug, 'FIELD', `Using nested migration for block field`);
           await migrateNestedBlockFieldData(
             client,
             nestedPath,
@@ -2258,11 +2109,9 @@ async function convertModularContentToLinksField(
             blockIdToRemove,
             mapping,
             isSingleBlock,
-            availableLocales,
-            debug
-          );
+            availableLocales
+    );
         } else {
-          debugLog(debug, 'FIELD', `Warning: Could not find nested path for block field, skipping data migration`);
         }
       } else {
         // Field is in a root model - use standard migration
@@ -2274,14 +2123,12 @@ async function convertModularContentToLinksField(
           mcField.localized,
           blockIdToRemove,
           mapping,
-          isSingleBlock,
-          debug
-        );
+          isSingleBlock
+    );
       }
     }
 
     // Update the original field to remove the converted block type
-    debugLog(debug, 'FIELD', `Updating original field to remove block type ${blockIdToRemove}`);
     await client.fields.update(mcField.id, {
       validators: {
         ...currentField.validators,
@@ -2293,7 +2140,6 @@ async function convertModularContentToLinksField(
   } else {
     // Full replacement: This is the LAST block in the modular content field
     // BUT we need to check if a _links field already exists from previous conversions!
-    debugLog(debug, 'FIELD', 'Full field replacement (last block being converted)');
     
     const existingFields = await client.fields.list(mcField.parentModelId);
     const expectedLinksApiKey = `${originalApiKey}_links`;
@@ -2302,7 +2148,6 @@ async function convertModularContentToLinksField(
     if (existingLinksField) {
       // APPEND TO EXISTING: A _links field exists from previous conversions
       // We should APPEND to it, not replace it!
-      debugLog(debug, 'FIELD', `Found existing links field "${expectedLinksApiKey}" - appending and deleting modular content`);
       
       // Get current allowed item types and add the new model
       const currentValidators = existingLinksField.validators as Record<string, unknown>;
@@ -2312,7 +2157,6 @@ async function convertModularContentToLinksField(
       // Add new model ID if not already present
       if (!currentItemTypes.includes(newModelId)) {
         const updatedItemTypes = [...currentItemTypes, newModelId];
-        debugLog(debug, 'FIELD', `Updating validators: ${currentItemTypes.length} → ${updatedItemTypes.length} allowed types`);
         
         await client.fields.update(existingLinksField.id, {
           validators: {
@@ -2328,7 +2172,6 @@ async function convertModularContentToLinksField(
       if (mcField.parentIsBlock) {
         const nestedPath = findNestedPathForField(nestedPaths, mcField);
         if (nestedPath) {
-          debugLog(debug, 'FIELD', `Using nested migration to APPEND data for block field`);
           await migrateNestedBlockFieldDataAppend(
             client,
             nestedPath,
@@ -2336,9 +2179,8 @@ async function convertModularContentToLinksField(
             existingLinksField.api_key,
             blockIdToRemove,
             mapping,
-            availableLocales,
-            debug
-          );
+            availableLocales
+    );
         }
       } else {
         await migrateFieldDataAppend(
@@ -2348,13 +2190,11 @@ async function convertModularContentToLinksField(
           existingLinksField.api_key,
           mcField.localized,
           blockIdToRemove,
-          mapping,
-          debug
-        );
+          mapping
+    );
       }
       
       // Now delete the original modular content field (it's empty now)
-      debugLog(debug, 'FIELD', `Deleting original modular content field: ${originalApiKey}`);
       await client.fields.destroy(mcField.id);
       await delay(500);
       
@@ -2387,14 +2227,12 @@ async function convertModularContentToLinksField(
       } as Parameters<typeof client.fields.create>[1];
       
       await client.fields.create(mcField.parentModelId, tempFieldData);
-      debugLog(debug, 'FIELD', `Created temp field: ${tempApiKey}`);
 
       // Step 2: Migrate data from old field to temp field
       if (mcField.parentIsBlock) {
         // Field is inside a block - use nested migration
         const nestedPath = findNestedPathForField(nestedPaths, mcField);
         if (nestedPath) {
-          debugLog(debug, 'FIELD', `Using nested migration for block field`);
           await migrateNestedBlockFieldData(
             client,
             nestedPath,
@@ -2403,11 +2241,9 @@ async function convertModularContentToLinksField(
             blockIdToRemove,
             mapping,
             isSingleBlock,
-            availableLocales,
-            debug
-          );
+            availableLocales
+    );
         } else {
-          debugLog(debug, 'FIELD', `Warning: Could not find nested path for block field, skipping data migration`);
         }
       } else {
         // Field is in a root model - use standard migration
@@ -2419,13 +2255,11 @@ async function convertModularContentToLinksField(
           mcField.localized,
           blockIdToRemove,
           mapping,
-          isSingleBlock,
-          debug
-        );
+          isSingleBlock
+    );
       }
 
       // Step 3: Delete old field
-      debugLog(debug, 'FIELD', `Deleting original field: ${originalApiKey}`);
       await client.fields.destroy(mcField.id);
       await delay(500);
 
@@ -2433,7 +2267,6 @@ async function convertModularContentToLinksField(
       const fieldsAfterDelete = await client.fields.list(mcField.parentModelId);
       const tempField = fieldsAfterDelete.find(f => f.api_key === tempApiKey);
       if (tempField) {
-        debugLog(debug, 'FIELD', `Renaming temp field ${tempApiKey} → ${originalApiKey}`);
         const updateData: Parameters<typeof client.fields.update>[1] = {
           label: originalLabel,
           api_key: originalApiKey,
@@ -2451,7 +2284,6 @@ async function convertModularContentToLinksField(
     }
   }
   
-  debugLog(debug, 'FIELD', `Field conversion complete for "${originalApiKey}"`);
 }
 
 /**
@@ -2465,15 +2297,8 @@ async function migrateFieldData(
   isLocalized: boolean,
   targetBlockId: string,
   mapping: BlockMigrationMapping,
-  isSingleValue: boolean,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  isSingleValue: boolean
 ): Promise<void> {
-  debugLog(debug, 'DATA', `Migrating data from "${oldFieldApiKey}" to "${newFieldApiKey}"`, {
-    modelId,
-    isLocalized,
-    isSingleValue,
-    mappingCount: Object.keys(mapping).length,
-  });
 
   let recordCount = 0;
   let updatedCount = 0;
@@ -2482,11 +2307,11 @@ async function migrateFieldData(
   for await (const record of client.items.listPagedIterator({
     filter: { type: modelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     recordCount++;
     const oldValue = record[oldFieldApiKey];
     if (!oldValue) {
-      debugLog(debug, 'DATA', `Record ${record.id}: No value in "${oldFieldApiKey}", skipping`);
       continue;
     }
 
@@ -2504,11 +2329,9 @@ async function migrateFieldData(
         );
       }
       newValue = localizedValue;
-      debugLog(debug, 'DATA', `Record ${record.id}: Processed ${Object.keys(localizedValue).length} locales`);
     } else {
       // Non-localized field
       newValue = extractLinksFromValue(oldValue, targetBlockId, mapping, isSingleValue);
-      debugLog(debug, 'DATA', `Record ${record.id}: Extracted links:`, newValue);
     }
 
     // Update the record with the new field value
@@ -2517,15 +2340,12 @@ async function migrateFieldData(
         [newFieldApiKey]: newValue,
       });
       updatedCount++;
-      debugLog(debug, 'DATA', `Record ${record.id}: Updated successfully`);
     } catch (error) {
       console.error(`Failed to migrate data for record ${record.id}:`, error);
-      debugLog(debug, 'ERROR', `Record ${record.id}: Failed to update`, error);
       // Continue with other records
     }
   }
 
-  debugLog(debug, 'DATA', `Data migration complete: ${updatedCount}/${recordCount} records updated`);
 }
 
 /**
@@ -2540,14 +2360,8 @@ async function migrateFieldDataAppend(
   linksFieldApiKey: string,
   isLocalized: boolean,
   targetBlockId: string,
-  mapping: BlockMigrationMapping,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  mapping: BlockMigrationMapping
 ): Promise<void> {
-  debugLog(debug, 'DATA_APPEND', `Appending data from "${oldFieldApiKey}" to existing "${linksFieldApiKey}"`, {
-    modelId,
-    isLocalized,
-    mappingCount: Object.keys(mapping).length,
-  });
 
   let recordCount = 0;
   let updatedCount = 0;
@@ -2557,20 +2371,20 @@ async function migrateFieldDataAppend(
   // which can be empty arrays if the records don't exist yet or have issues
   for await (const record of client.items.listPagedIterator({
     filter: { type: modelId },
+    version: 'current', // Fetch draft version to get latest changes
     // DO NOT use nested: true here - we need raw field values for links
   })) {
     recordCount++;
     
     // For the modular content field (oldFieldApiKey), we need to fetch with nested to get block data
     // Let's fetch the same record with nested: true to get the block data
-    const nestedRecord = await client.items.find(record.id, { nested: true });
+    const nestedRecord = await client.items.find(record.id, { nested: true, version: 'current' });
     const oldValue = nestedRecord[oldFieldApiKey];
     
     // For the links field, use the NON-nested value (raw IDs)
     const existingLinksValue = record[linksFieldApiKey];
     
     if (!oldValue) {
-      debugLog(debug, 'DATA_APPEND', `Record ${record.id}: No value in "${oldFieldApiKey}", skipping`);
       continue;
     }
 
@@ -2620,7 +2434,6 @@ async function migrateFieldDataAppend(
         localizedValue[locale] = combinedLinks;
       }
       newValue = localizedValue;
-      debugLog(debug, 'DATA_APPEND', `Record ${record.id}: Appended links for ${Object.keys(localizedValue).length} locales`);
     } else {
       // Non-localized field
       const newLinks = extractLinksFromValue(oldValue, targetBlockId, mapping, false) as string[];
@@ -2644,7 +2457,6 @@ async function migrateFieldDataAppend(
         }
       }
       newValue = combinedLinks;
-      debugLog(debug, 'DATA_APPEND', `Record ${record.id}: Appended ${newLinks.length} new links to ${existingLinks.length} existing`);
     }
 
     // Update the record with the combined value
@@ -2653,14 +2465,11 @@ async function migrateFieldDataAppend(
         [linksFieldApiKey]: newValue,
       });
       updatedCount++;
-      debugLog(debug, 'DATA_APPEND', `Record ${record.id}: Updated successfully`);
     } catch (error) {
       console.error(`Failed to append data for record ${record.id}:`, error);
-      debugLog(debug, 'ERROR', `Record ${record.id}: Failed to update`, error);
     }
   }
 
-  debugLog(debug, 'DATA_APPEND', `Data append complete: ${updatedCount}/${recordCount} records updated`);
 }
 
 /**
@@ -2674,25 +2483,17 @@ async function migrateNestedBlockFieldDataAppend(
   linksFieldApiKey: string,
   targetBlockId: string,
   mapping: BlockMigrationMapping,
-  availableLocales: string[],
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  availableLocales: string[]
 ): Promise<void> {
-  debugLog(debug, 'NESTED_APPEND', `Appending nested field data`, {
-    rootModel: nestedPath.rootModelName,
-    path: nestedPath.path.map(p => p.fieldApiKey).join(' → '),
-    oldField: oldFieldApiKey,
-    linksField: linksFieldApiKey,
-  });
 
   let recordCount = 0;
   let updatedCount = 0;
 
   const pathToParentBlock = nestedPath.path.slice(0, -1);
   
-  debugLog(debug, 'NESTED_APPEND', `Path to parent: ${pathToParentBlock.map(p => p.fieldApiKey).join(' → ') || '(root)'}`);
 
   // Create the update function that will be called for PARENT blocks
-  const updateBlockFn = (blockData: Record<string, unknown>, locale: string | null): Record<string, unknown> => {
+  const updateBlockFn = (blockData: Record<string, unknown>, _locale: string | null): Record<string, unknown> => {
     // Get the old field value (modular content with blocks)
     const oldValue = getNestedFieldValueFromBlock(blockData, oldFieldApiKey);
     // Get the existing links field value
@@ -2715,7 +2516,6 @@ async function migrateNestedBlockFieldDataAppend(
       }
     }
 
-    debugLog(debug, 'NESTED_APPEND', `Appended ${newLinks.length} new links to ${existingLinks.length} existing`, { locale });
 
     // Set the combined links value
     return setNestedFieldValueInBlock(blockData, linksFieldApiKey, combinedLinks);
@@ -2725,6 +2525,7 @@ async function migrateNestedBlockFieldDataAppend(
   for await (const record of client.items.listPagedIterator({
     filter: { type: nestedPath.rootModelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     recordCount++;
 
@@ -2741,17 +2542,15 @@ async function migrateNestedBlockFieldDataAppend(
       result = traverseAndUpdateNestedBlocksAtLevel(
         rootFieldValue,
         nestedPath.path[0],
-        updateBlockFn,
-        debug
-      );
+        updateBlockFn
+    );
     } else {
       result = traverseAndUpdateNestedBlocks(
         rootFieldValue,
         pathToParentBlock,
         0,
-        updateBlockFn,
-        debug
-      );
+        updateBlockFn
+    );
     }
 
     if (result.updated) {
@@ -2786,7 +2585,6 @@ async function migrateNestedBlockFieldDataAppend(
     }
   }
 
-  debugLog(debug, 'NESTED_APPEND', `Nested data append complete: ${updatedCount}/${recordCount} records updated`);
 }
 
 /**
@@ -2844,20 +2642,15 @@ function extractLinksFromValue(
 
 /**
  * Cleans up nested blocks from the original modular content field.
- * This is used in non-debug mode when doing partial replacement (keeping both fields).
+ * This is used when doing partial replacement (keeping both fields).
  * It removes the target blocks from the original field since they've been migrated to the links field.
  */
 async function cleanupNestedBlocksFromOriginalField(
   client: CMAClient,
   rootModelId: string,
   paths: NestedBlockPath[],
-  targetBlockId: string,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  targetBlockId: string
 ): Promise<void> {
-  debugLog(debug, 'CLEANUP', `Cleaning up nested blocks in model ${rootModelId}`, {
-    pathCount: paths.length,
-    targetBlockId,
-  });
 
   let recordCount = 0;
   let updatedCount = 0;
@@ -2866,6 +2659,7 @@ async function cleanupNestedBlocksFromOriginalField(
   for await (const record of client.items.listPagedIterator({
     filter: { type: rootModelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     recordCount++;
     let needsUpdate = false;
@@ -2883,31 +2677,26 @@ async function cleanupNestedBlocksFromOriginalField(
         rootFieldValue,
         path.path,
         0,
-        targetBlockId,
-        debug
-      );
+        targetBlockId
+    );
 
       if (result.updated) {
         needsUpdate = true;
         updates[rootFieldApiKey] = result.newValue;
-        debugLog(debug, 'CLEANUP', `Record ${record.id}: Removed blocks from "${rootFieldApiKey}"`);
       }
     }
 
     if (needsUpdate) {
       try {
-        debugLog(debug, 'CLEANUP', `Record ${record.id}: Applying cleanup updates`);
         await client.items.update(record.id, updates);
         updatedCount++;
       } catch (error) {
         console.error(`Failed to cleanup record ${record.id}:`, error);
-        debugLog(debug, 'ERROR', `Record ${record.id}: Failed to cleanup nested blocks`, error);
         throw error;
       }
     }
   }
 
-  debugLog(debug, 'CLEANUP', `Nested block cleanup complete: ${updatedCount}/${recordCount} records updated`);
 }
 
 /**
@@ -2918,8 +2707,7 @@ function traverseAndRemoveBlocks(
   fieldValue: unknown,
   path: NestedBlockPath['path'],
   pathIndex: number,
-  targetBlockId: string,
-  debug: DebugOptions = DEFAULT_DEBUG_OPTIONS
+  targetBlockId: string
 ): { updated: boolean; newValue: unknown } {
   if (pathIndex >= path.length || !fieldValue) {
     return { updated: false, newValue: fieldValue };
@@ -2947,7 +2735,6 @@ function traverseAndRemoveBlocks(
         if (blockTypeId === targetBlockId) {
           // Don't add this block - it's being removed
           updated = true;
-          debugLog(debug, 'CLEANUP', `Removing block of type ${targetBlockId}`);
         } else {
           newBlocks.push(block);
         }
@@ -2964,9 +2751,8 @@ function traverseAndRemoveBlocks(
               nestedFieldValue,
               path,
               pathIndex + 1,
-              targetBlockId,
-              debug
-            );
+              targetBlockId
+    );
 
             if (result.updated) {
               // Update the block with the cleaned nested field value

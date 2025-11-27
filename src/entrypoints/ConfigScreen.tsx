@@ -5,15 +5,14 @@ import {
   Button,
   Spinner,
   SwitchField,
-  TextField,
   Form,
   SelectField,
   Section,
 } from 'datocms-react-ui';
 import { createClient } from '../utils/client';
 import { analyzeBlock } from '../utils/analyzer';
-import { convertBlockToModel, deleteOriginalBlock, renameModelToOriginal } from '../utils/converter';
-import type { BlockAnalysis, ConversionProgress, DebugOptions } from '../types';
+import { convertBlockToModel } from '../utils/converter';
+import type { BlockAnalysis, ConversionProgress, CleanupContext } from '../types';
 import s from './styles.module.css';
 
 type Props = {
@@ -43,6 +42,7 @@ type ConversionState =
       convertedFields: number;
       originalBlockName?: string;
       originalBlockApiKey?: string;
+      cleanupContext?: CleanupContext;
     } }
   | { status: 'error'; message: string };
 
@@ -90,41 +90,14 @@ const Icons = {
   )
 };
 
-// Generate a default debug suffix using letters only (DatoCMS api_keys don't allow numbers)
-function generateDebugSuffix(): string {
-  // Use a short random string of lowercase letters
-  const chars = 'abcdefghijklmnopqrstuvwxyz';
-  let randomPart = '';
-  for (let i = 0; i < 6; i++) {
-    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `_dev_${randomPart}`;
-}
-
 export default function ConfigScreen({ ctx }: Props) {
   const [selectedBlockId, setSelectedBlockId] = useState<string>('');
   const [conversionState, setConversionState] = useState<ConversionState>({ status: 'idle' });
   const [blockModels, setBlockModels] = useState<BlockModel[]>([]);
   const [loadingBlocks, setLoadingBlocks] = useState(true);
-  const [originalBlockDeleted, setOriginalBlockDeleted] = useState(false);
-  const [deletingBlock, setDeletingBlock] = useState(false);
   
-  // Debug mode state
-  const [debugModeEnabled, setDebugModeEnabled] = useState(false);
-  const [debugSuffix, setDebugSuffix] = useState(generateDebugSuffix);
-  
-  // Handler for regenerating the debug suffix
-  const handleRegenerateSuffix = useCallback(() => {
-    setDebugSuffix(generateDebugSuffix());
-  }, []);
-  
-  // Build the debug options object
-  const debugOptions: DebugOptions = useMemo(() => ({
-    enabled: debugModeEnabled,
-    suffix: debugModeEnabled ? debugSuffix : '',
-    skipDeletions: debugModeEnabled, // Always skip deletions in debug mode
-    verboseLogging: debugModeEnabled, // Always log in debug mode
-  }), [debugModeEnabled, debugSuffix]);
+  // Replacement mode - if true, fully replaces original block; if false, adds link field alongside
+  const [fullyReplaceBlock, setFullyReplaceBlock] = useState(false);
 
   // Create CMA client
   const client = useMemo(() => {
@@ -193,23 +166,32 @@ export default function ConfigScreen({ ctx }: Props) {
   const handleConvert = useCallback(async () => {
     if (!client || !selectedBlockId) return;
 
-    // In debug mode, show a different confirmation dialog
-    const confirmTitle = debugOptions.enabled 
-      ? 'Convert Block to Model (DEBUG MODE)?' 
-      : 'Convert Block to Model?';
-    
-    const confirmContent = debugOptions.enabled
-      ? `DEBUG MODE is enabled. This will:\n\n• Create a new model with suffix "${debugSuffix}"\n• Create records from block instances\n• Create new link fields (original fields preserved)\n• NOT delete any existing fields or blocks\n\nYou can run this multiple times safely.`
-      : 'This will create a new model with records from the block instances, and convert modular content fields to link fields. This operation cannot be easily undone. Are you sure you want to proceed?';
+    // Build confirmation dialog based on mode
+    let confirmTitle: string;
+    let confirmContent: string;
+    let confirmLabel: string;
+    let confirmIntent: 'positive' | 'negative';
+
+    if (fullyReplaceBlock) {
+      confirmTitle = 'Convert & Replace Block?';
+      confirmContent = 'This will create a new model from the block, create records from block instances, replace block fields with link fields, and DELETE the original block model and all its data. This operation cannot be undone. Are you sure?';
+      confirmLabel = 'Convert & Replace';
+      confirmIntent = 'negative';
+    } else {
+      confirmTitle = 'Convert Block to Model?';
+      confirmContent = 'This will create a new model from the block, create records from block instances, and create new link fields alongside existing block fields. The original block model will be kept intact and can be deleted later if desired.';
+      confirmLabel = 'Convert';
+      confirmIntent = 'positive';
+    }
 
     const confirmed = await ctx.openConfirm({
       title: confirmTitle,
       content: confirmContent,
       choices: [
         {
-          label: debugOptions.enabled ? 'Convert (Debug)' : 'Convert',
+          label: confirmLabel,
           value: 'convert',
-          intent: debugOptions.enabled ? 'positive' : 'negative',
+          intent: confirmIntent,
         },
       ],
       cancel: {
@@ -220,22 +202,13 @@ export default function ConfigScreen({ ctx }: Props) {
 
     if (confirmed !== 'convert') return;
 
-    // Log debug mode status to console
-    if (debugOptions.enabled) {
-      console.log('======================================');
-      console.log('[DEBUG MODE] Starting conversion...');
-      console.log('[DEBUG MODE] Suffix:', debugSuffix);
-      console.log('[DEBUG MODE] Skip deletions:', debugOptions.skipDeletions);
-      console.log('[DEBUG MODE] Verbose logging:', debugOptions.verboseLogging);
-      console.log('======================================');
-    }
-
+    const totalSteps = fullyReplaceBlock ? 7 : 6;
     setConversionState({
       status: 'converting',
       progress: {
         currentStep: 0,
-        totalSteps: 6,
-        stepDescription: debugOptions.enabled ? 'Starting conversion (DEBUG MODE)...' : 'Starting conversion...',
+        totalSteps,
+        stepDescription: 'Starting conversion...',
         percentage: 0,
       },
     });
@@ -243,7 +216,7 @@ export default function ConfigScreen({ ctx }: Props) {
     try {
       const result = await convertBlockToModel(client, selectedBlockId, (progress) => {
         setConversionState({ status: 'converting', progress });
-      }, debugOptions);
+      }, fullyReplaceBlock);
 
       if (result.success) {
         setConversionState({
@@ -255,12 +228,16 @@ export default function ConfigScreen({ ctx }: Props) {
             convertedFields: result.convertedFieldsCount,
             originalBlockName: result.originalBlockName,
             originalBlockApiKey: result.originalBlockApiKey,
+            cleanupContext: result.cleanupContext,
           },
         });
 
-        const successMessage = debugOptions.enabled
-          ? `[DEBUG] Successfully converted block to model "${result.newModelApiKey}"! Original fields/blocks preserved.`
-          : `Successfully converted block to model "${result.newModelApiKey}"!`;
+        let successMessage: string;
+        if (fullyReplaceBlock) {
+          successMessage = `Successfully converted and replaced block with model "${result.newModelApiKey}"!`;
+        } else {
+          successMessage = `Successfully converted block to model "${result.newModelApiKey}"! Original block preserved.`;
+        }
         
         await ctx.notice(successMessage);
       } else {
@@ -275,65 +252,14 @@ export default function ConfigScreen({ ctx }: Props) {
       setConversionState({ status: 'error', message });
       await ctx.alert(`Conversion failed: ${message}`);
     }
-  }, [client, selectedBlockId, ctx, debugOptions, debugSuffix]);
+  }, [client, selectedBlockId, ctx, fullyReplaceBlock]);
 
   // Reset state
   const handleReset = useCallback(() => {
     setSelectedBlockId('');
     setConversionState({ status: 'idle' });
-    setOriginalBlockDeleted(false);
-    setDeletingBlock(false);
+    setFullyReplaceBlock(false);
   }, []);
-
-  // Handle deleting the original block
-  const handleDeleteOriginalBlock = useCallback(async () => {
-    if (!client || conversionState.status !== 'success') return;
-
-    setDeletingBlock(true);
-    try {
-      await deleteOriginalBlock(client, selectedBlockId);
-      
-      const result = conversionState.result;
-      // After deleting the original block, rename the new model to have the original name/api_key
-      if (result.newModelId && result.originalBlockName && result.originalBlockApiKey) {
-        const renameResult = await renameModelToOriginal(
-          client,
-          result.newModelId,
-          result.originalBlockName,
-          result.originalBlockApiKey
-        );
-        
-        if (renameResult.success) {
-          // Update the displayed result with the final name/api_key
-          setConversionState({
-            status: 'success',
-            result: {
-              newModelId: result.newModelId,
-              newModelApiKey: renameResult.finalApiKey,
-              migratedRecords: result.migratedRecords,
-              convertedFields: result.convertedFields,
-            },
-          });
-          
-          if (renameResult.error) {
-            await ctx.notice(`Original block deleted and model renamed to "${renameResult.finalName}". Note: ${renameResult.error}`);
-          } else {
-            await ctx.notice(`Original block deleted and model renamed to "${renameResult.finalName}" (${renameResult.finalApiKey})!`);
-          }
-        } else {
-          await ctx.notice(`Original block deleted, but could not rename model: ${renameResult.error}`);
-        }
-      } else {
-        await ctx.notice('Original block deleted successfully!');
-      }
-      
-      setOriginalBlockDeleted(true);
-    } catch (error) {
-      await ctx.alert(`Failed to delete original block: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setDeletingBlock(false);
-    }
-  }, [client, selectedBlockId, conversionState, ctx]);
 
   const blockOptions: Option[] = useMemo(() => {
     return blockModels.map(block => ({
@@ -452,37 +378,53 @@ export default function ConfigScreen({ ctx }: Props) {
                     </div>
 
                     <div className={s.analysisSection}>
-                      <h3><span className={s.iconWrapper}><Icons.Field /></span> Content Fields ({conversionState.analysis.fields.length})</h3>
-                      <ul className={s.fieldList}>
-                        {conversionState.analysis.fields.map((field) => {
-                          const internalDomain = (ctx.site as { attributes?: { internal_domain?: string | null } })?.attributes?.internal_domain;
-                          const fieldUrl = internalDomain 
-                            ? `https://${internalDomain}/schema/item_types/${selectedBlockId}#f${field.id}`
-                            : undefined;
-                          
-                          return (
-                            <li key={field.id} className={s.fieldListItemClickable}>
-                              <a 
-                                href={fieldUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className={s.fieldListLink}
-                              >
-                                <div className={s.fieldInfo}>
-                                  <strong>{field.label}</strong>
-                                  <span className={s.fieldApiKey}><Icons.Code /> {field.apiKey}</span>
-                                </div>
-                                <div className={s.fieldMeta}>
-                                  <span className={s.fieldType}>{field.fieldType}</span>
-                                  {field.localized && <span className={s.badge}>Localized</span>}
-                                </div>
-                              </a>
-                            </li>
-                          );
-                        })}
-                      </ul>
+                      <h3><span className={s.iconWrapper}><Icons.Field /></span> Fields using this block ({conversionState.analysis.modularContentFields.length})</h3>
+                      {conversionState.analysis.modularContentFields.length === 0 ? (
+                        <p className={s.emptyFieldsNote}>This block is not used in any fields.</p>
+                      ) : (
+                        <ul className={s.fieldList}>
+                          {conversionState.analysis.modularContentFields.map((field) => {
+                            const internalDomain = (ctx.site as { attributes?: { internal_domain?: string | null } })?.attributes?.internal_domain;
+                            const fieldUrl = internalDomain 
+                              ? `https://${internalDomain}/schema/item_types/${field.parentModelId}#f${field.id}`
+                              : undefined;
+                            
+                            return (
+                              <li key={field.id} className={s.fieldListItemClickable}>
+                                <a 
+                                  href={fieldUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={s.fieldListLink}
+                                >
+                                  <div className={s.fieldInfo}>
+                                    <strong>{field.label}</strong>
+                                    <span className={s.fieldApiKey}><Icons.Code /> {field.parentModelApiKey}.{field.apiKey}</span>
+                                  </div>
+                                  <div className={s.fieldMeta}>
+                                    <span className={s.fieldType}>{field.fieldType}</span>
+                                    {field.parentIsBlock && <span className={s.badge}>In Block</span>}
+                                    {field.localized && <span className={s.badge}>Localized</span>}
+                                  </div>
+                                </a>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
                     </div>
                   </Section>
+
+                  <div className={s.conversionOptions}>
+                    <SwitchField
+                      id="fully-replace-block"
+                      name="fully-replace-block"
+                      label="Fully replace original block"
+                      hint="When enabled, the original block model and its field data will be deleted after conversion. The new links field will take its place."
+                      value={fullyReplaceBlock}
+                      onChange={(newValue) => setFullyReplaceBlock(newValue)}
+                    />
+                  </div>
 
                   <div className={s.actions}>
                     <Button onClick={handleReset} buttonType="muted">
@@ -490,10 +432,10 @@ export default function ConfigScreen({ ctx }: Props) {
                     </Button>
                     <Button
                       onClick={handleConvert}
-                      buttonType={debugOptions.enabled ? 'primary' : 'negative'}
+                      buttonType={fullyReplaceBlock ? 'negative' : 'primary'}
                       disabled={conversionState.analysis.modularContentFields.length === 0}
                     >
-                      {debugOptions.enabled ? 'Convert (Debug Mode)' : 'Convert Block to Model'}
+                      {fullyReplaceBlock ? 'Convert & Replace Block' : 'Convert Block to Model'}
                     </Button>
                   </div>
                 </div>
@@ -507,7 +449,7 @@ export default function ConfigScreen({ ctx }: Props) {
                   <Spinner size={32} />
                   
                   <div className={s.progressHeader}>
-                    <h2>{debugOptions.enabled ? 'Converting (Debug)...' : 'Converting...'}</h2>
+                    <h2>Converting...</h2>
                   </div>
 
                   <div className={s.progressContainer}>
@@ -555,23 +497,9 @@ export default function ConfigScreen({ ctx }: Props) {
                     <p>
                       New Model Created: <strong>{conversionState.result.newModelApiKey}</strong>
                     </p>
-                    {debugOptions.enabled && (
-                       <p className={s.progressDebugNote}>
-                        Debug Mode: Original fields preserved. Suffix: {debugSuffix}
-                      </p>
-                    )}
                   </div>
 
                   <div className={s.actions} style={{ justifyContent: 'center' }}>
-                    {!debugOptions.enabled && !originalBlockDeleted && (
-                      <Button 
-                        onClick={handleDeleteOriginalBlock} 
-                        buttonType="negative"
-                        disabled={deletingBlock}
-                      >
-                        {deletingBlock ? 'Deleting...' : 'Delete Original Block'}
-                      </Button>
-                    )}
                     <Button onClick={handleReset} buttonType="primary">
                       Convert Another Block
                     </Button>
@@ -589,55 +517,6 @@ export default function ConfigScreen({ ctx }: Props) {
                   <Button onClick={handleReset} buttonType="primary">
                     Try Again
                   </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Debug Mode Toggle */}
-            <div className={s.debugToggleWrapper}>
-              <div className={s.debugToggle}>
-                <SwitchField
-                  id="debug-mode-toggle"
-                  name="debug-mode-toggle"
-                  label="Advanced Mode"
-                  value={debugModeEnabled}
-                  onChange={(newValue) => setDebugModeEnabled(newValue)}
-                />
-              </div>
-            </div>
-
-            {debugModeEnabled && (
-              <div className={s.debugSection}>
-                <div className={s.debugHeader}>
-                   <span>🔧</span> Debug Configuration
-                </div>
-                
-                <TextField
-                  id="debug-suffix"
-                  name="debug-suffix"
-                  label="Debug Suffix"
-                  hint="Appended to created models/fields to prevent conflicts."
-                  value={debugSuffix}
-                  onChange={(newValue) => setDebugSuffix(newValue)}
-                  placeholder="_dev_001"
-                  textInputProps={{
-                    monospaced: true,
-                  }}
-                />
-                
-                <div style={{ marginTop: 'var(--spacing-m)' }}>
-                   <Button
-                    buttonType="muted"
-                    buttonSize="s"
-                    onClick={handleRegenerateSuffix}
-                  >
-                    Regenerate Suffix
-                  </Button>
-                </div>
-
-                <div className={s.debugBannerList} style={{ marginTop: 'var(--spacing-m)' }}>
-                  <p>• Non-destructive: original fields/blocks preserved</p>
-                  <p>• Verbose logging enabled in console</p>
                 </div>
               </div>
             )}

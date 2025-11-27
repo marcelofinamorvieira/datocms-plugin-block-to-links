@@ -484,6 +484,7 @@ async function countRecordsWithNestedBlock(
   for await (const record of client.items.listPagedIterator({
     filter: { type: nestedPath.rootModelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     if (recordContainsBlockAtPath(record, nestedPath.path, targetBlockId)) {
       count++;
@@ -731,6 +732,7 @@ export async function getAllBlockInstancesNested(
   for await (const record of client.items.listPagedIterator({
     filter: { type: nestedPath.rootModelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     const blocks = findBlocksAtPath(record, nestedPath.path, targetBlockId);
 
@@ -772,6 +774,7 @@ export async function getGroupedBlockInstances(
   for await (const record of client.items.listPagedIterator({
     filter: { type: nestedPath.rootModelId },
     nested: true,
+    version: 'current', // Fetch draft version to get latest changes
   })) {
     const blocks = findBlocksAtPath(record, nestedPath.path, targetBlockId);
 

@@ -317,25 +317,18 @@ function cloneDast<T>(value: T): T {
  * @param structuredTextValue - The complete structured text field value
  * @param targetBlockTypeId - The block type ID to transform
  * @param mapping - Mapping from old block IDs to new record IDs
- * @param debugMode - If true, adds links AFTER blocks instead of replacing them
  * @returns Transformed structured text value, or null if no changes were made
  */
 export function transformDastBlocksToLinks(
   structuredTextValue: StructuredTextValue,
   targetBlockTypeId: string,
-  mapping: BlockMigrationMapping,
-  debugMode: boolean = false
+  mapping: BlockMigrationMapping
 ): StructuredTextValue | null {
   // Find all block nodes of the target type
   const blockNodes = findBlockNodesOfType(structuredTextValue, targetBlockTypeId);
   
   if (blockNodes.length === 0) {
     return null; // No changes needed
-  }
-  
-  // In debug mode, use the "add after" approach instead of replacing
-  if (debugMode) {
-    return addLinksAfterBlocks(structuredTextValue, targetBlockTypeId, mapping);
   }
 
   // Clone the value to avoid mutation
@@ -398,144 +391,6 @@ export function transformDastBlocksToLinks(
     })) as typeof result.blocks;
   }
 
-  return result;
-}
-
-/**
- * In debug mode, adds inlineItem nodes AFTER each matching block node instead of replacing.
- * This allows seeing both the original block and the new link.
- * 
- * IMPORTANT: This function recursively processes the entire DAST tree, just like
- * replaceBlockNodesInTree does in non-debug mode, to ensure consistent behavior.
- */
-function addLinksAfterBlocks(
-  structuredTextValue: StructuredTextValue,
-  targetBlockTypeId: string,
-  mapping: BlockMigrationMapping
-): StructuredTextValue | null {
-  // Clone the value to avoid mutation
-  const result = cloneDast(structuredTextValue);
-  const blocks = result.blocks || [];
-  const newLinks: Array<{ id: string }> = [];
-  let hasChanges = false;
-  
-  // Process the document's children at root level
-  const rootDoc = result.document as DastRootNode;
-  if (!rootDoc.children || !Array.isArray(rootDoc.children)) {
-    return null;
-  }
-  
-  /**
-   * Recursively process nodes and add debug links after matching blocks.
-   * For root-level block nodes, adds a new paragraph after them.
-   * Returns the processed children array (may have additional elements).
-   */
-  function processChildren(
-    children: DastNode[],
-    isRootLevel: boolean
-  ): DastNode[] {
-    const newChildren: DastNode[] = [];
-    
-    for (const child of children) {
-      // First, recursively process this node's children if it has any
-      let processedChild = child;
-      if (isNodeWithChildren(child)) {
-        const childNode = { ...child } as DastNodeWithChildren;
-        const childIsRoot = child.type === 'root';
-        childNode.children = processChildren(
-          childNode.children as DastNode[],
-          childIsRoot
-        ) as typeof childNode.children;
-        processedChild = childNode as DastNode;
-      }
-      
-      // Always keep the (processed) child
-      newChildren.push(processedChild);
-      
-      // Check if this is a block node that matches our target
-      if (isBlockNode(processedChild) || isInlineBlockNode(processedChild)) {
-        const blockNode = processedChild as DastBlockNode | DastInlineBlockNode;
-        const itemId = getBlockNodeItemId(blockNode);
-        
-        // Get block type ID
-        let blockTypeId = getInlinedBlockTypeId(blockNode);
-        if (!blockTypeId && typeof itemId === 'string') {
-          const blockRecord = findBlockRecordById(blocks, itemId);
-          blockTypeId = blockRecord ? getBlockRecordTypeId(blockRecord) : undefined;
-        }
-        
-        // If this block matches our target and we have a mapping for it
-        if (blockTypeId === targetBlockTypeId && itemId && mapping[itemId]) {
-          const newRecordId = mapping[itemId];
-          
-          if (isRootLevel) {
-            // For root-level blocks, add a paragraph after the block
-            // (inlineItem can't be at root level, must be inside a paragraph)
-            newChildren.push({
-              type: 'paragraph',
-              children: [
-                {
-                  type: 'span',
-                  value: '🔗 [DEBUG: Link to converted record] ',
-                } as DastNode,
-                {
-                  type: 'inlineItem',
-                  item: newRecordId,
-                } as DastNode,
-              ],
-            } as DastNode);
-          } else {
-            // For non-root-level (inline) blocks, add an inline link after
-            // This handles inlineBlock nodes that appear within paragraphs
-            newChildren.push({
-              type: 'span',
-              value: ' 🔗',
-            } as DastNode);
-            newChildren.push({
-              type: 'inlineItem',
-              item: newRecordId,
-            } as DastNode);
-          }
-          
-          // Track the new link
-          newLinks.push({ id: newRecordId });
-          hasChanges = true;
-        }
-      }
-    }
-    
-    return newChildren;
-  }
-  
-  // Process the root document's children
-  const processedChildren = processChildren(rootDoc.children as DastNode[], true);
-  
-  if (!hasChanges) {
-    return null;
-  }
-  
-  // Update the document with new children
-  (result.document as DastRootNode).children = processedChildren as DastRootNode['children'];
-  
-  // Add new records to the links array
-  // IMPORTANT: Normalize the format to just { id: string } for consistency
-  // (same as non-debug mode to ensure consistent behavior)
-  if (newLinks.length > 0) {
-    if (!result.links) {
-      result.links = [];
-    }
-    // Normalize existing links to just { id } format to avoid mixed formats
-    result.links = result.links.map(l => ({ id: l.id })) as typeof result.links;
-    
-    const existingLinkIds = new Set(result.links.map(l => l.id));
-    for (const link of newLinks) {
-      if (!existingLinkIds.has(link.id)) {
-        result.links.push(link as typeof result.links[number]);
-        existingLinkIds.add(link.id);
-      }
-    }
-  }
-  
   return result;
 }
 
@@ -664,5 +519,324 @@ export function extractLinksFromStructuredText(
   }
 
   return linkIds;
+}
+
+/**
+ * Removes block nodes of a specific type from a DAST document.
+ * This is used during cleanup when user clicks "Delete Original Block".
+ * The block nodes and their corresponding blocks array entries are removed.
+ * 
+ * @param structuredTextValue - The complete structured text field value
+ * @param targetBlockTypeId - The block type ID to remove
+ * @returns Transformed structured text value, or null if no changes were made
+ */
+export function removeBlockNodesFromDast(
+  structuredTextValue: StructuredTextValue,
+  targetBlockTypeId: string
+): StructuredTextValue | null {
+  // Find all block nodes of the target type
+  const blockNodes = findBlockNodesOfType(structuredTextValue, targetBlockTypeId);
+  
+  if (blockNodes.length === 0) {
+    return null; // No changes needed
+  }
+
+  // Clone the value to avoid mutation
+  const result = JSON.parse(JSON.stringify(structuredTextValue)) as StructuredTextValue;
+  
+  // Track which blocks to remove from the blocks array
+  const blocksToRemove = new Set<string>();
+  
+  // Recursively remove block nodes from the document tree
+  result.document = removeBlockNodesFromTree(
+    result.document,
+    targetBlockTypeId,
+    result.blocks || [],
+    blocksToRemove
+  ) as DastRootNode;
+
+  // Remove converted blocks from the blocks array
+  if (result.blocks) {
+    result.blocks = result.blocks.filter(block => !blocksToRemove.has(block.id));
+    if (result.blocks.length === 0) {
+      delete result.blocks;
+    }
+  }
+
+  // Normalize blocks array format if it exists
+  if (result.blocks) {
+    result.blocks = result.blocks.map(block => ({
+      id: block.id,
+      type: block.type,
+      attributes: block.attributes,
+      relationships: block.relationships,
+    })) as typeof result.blocks;
+  }
+
+  // Normalize links array if it exists
+  if (result.links) {
+    result.links = result.links.map(l => ({ id: l.id })) as typeof result.links;
+  }
+
+  return result;
+}
+
+/**
+ * Recursively removes block/inlineBlock nodes of a specific type from a tree.
+ * Used for cleanup - removes the original block nodes (inlineItem nodes are already there from conversion).
+ */
+function removeBlockNodesFromTree<T extends DastNode>(
+  node: T,
+  targetBlockTypeId: string,
+  blocks: DastBlockRecord[],
+  blocksToRemove: Set<string>
+): T | null {
+  // Check if this is a block or inlineBlock node to remove
+  if (isBlockNode(node) || isInlineBlockNode(node)) {
+    // Get block ID (handles both string ID and inlined object formats)
+    const itemId = getBlockNodeItemId(node);
+    
+    // Try to get block type ID - first from inlined data, then from blocks array
+    let blockTypeId = getInlinedBlockTypeId(node);
+    
+    if (!blockTypeId && typeof itemId === 'string') {
+      // Fallback: look up in blocks array
+      const blockRecord = findBlockRecordById(blocks, itemId);
+      blockTypeId = blockRecord ? getBlockRecordTypeId(blockRecord) : undefined;
+    }
+
+    if (blockTypeId === targetBlockTypeId && itemId) {
+      // Mark block for removal
+      blocksToRemove.add(itemId);
+      // Return null to indicate this node should be removed
+      return null;
+    }
+  }
+
+  // If node has children, recursively process them
+  if (isNodeWithChildren(node)) {
+    const clonedNode = { ...node } as DastNodeWithChildren;
+    
+    const newChildren = clonedNode.children
+      .map(child => removeBlockNodesFromTree(
+        child as DastNode,
+        targetBlockTypeId,
+        blocks,
+        blocksToRemove
+      ))
+      .filter((child): child is DastNode => child !== null);
+    
+    clonedNode.children = newChildren as typeof clonedNode.children;
+    return clonedNode as T;
+  }
+
+  // Return node unchanged
+  return node;
+}
+
+// =============================================================================
+// Partial Mode: Add InlineItems Alongside Blocks
+// =============================================================================
+
+/**
+ * Adds inlineItem nodes alongside existing block/inlineBlock nodes in a DAST document.
+ * This is used for partial replacement mode where we keep the original blocks
+ * but also add references to the converted records.
+ * 
+ * @param structuredTextValue - The complete structured text field value
+ * @param targetBlockTypeId - The block type ID to add links for
+ * @param mapping - Mapping from old block IDs to new record IDs
+ * @returns Transformed structured text value with blocks AND new inlineItems, or null if no changes
+ */
+export function addInlineItemsAlongsideBlocks(
+  structuredTextValue: StructuredTextValue,
+  targetBlockTypeId: string,
+  mapping: BlockMigrationMapping
+): StructuredTextValue | null {
+  // Find all block nodes of the target type
+  const blockNodes = findBlockNodesOfType(structuredTextValue, targetBlockTypeId);
+  
+  if (blockNodes.length === 0) {
+    return null; // No changes needed
+  }
+
+  // Clone the value to avoid mutation
+  const result = cloneDast(structuredTextValue);
+  
+  // Track which records to add to links
+  const newLinks: Array<{ id: string }> = [];
+  
+  // Add inlineItem nodes alongside block nodes in the document tree
+  result.document = addInlineItemsAlongsideBlocksInTree(
+    result.document,
+    targetBlockTypeId,
+    result.blocks || [],
+    mapping,
+    newLinks
+  );
+
+  // ALWAYS normalize links array (even if not adding new ones)
+  // This is critical because nested: true returns expanded record data
+  // and DatoCMS expects just { id: string } format when saving
+  if (result.links) {
+    result.links = result.links.map(l => ({ id: l.id })) as typeof result.links;
+  }
+
+  // Add new records to the links array
+  if (newLinks.length > 0) {
+    if (!result.links) {
+      result.links = [];
+    }
+    // Add only unique links (avoid duplicates)
+    const existingLinkIds = new Set(result.links.map(l => l.id));
+    for (const link of newLinks) {
+      if (!existingLinkIds.has(link.id)) {
+        result.links.push(link as typeof result.links[number]);
+        existingLinkIds.add(link.id);
+      }
+    }
+  }
+
+  // Normalize blocks array format if it exists (keep all blocks)
+  if (result.blocks) {
+    result.blocks = result.blocks.map(block => ({
+      id: block.id,
+      type: block.type,
+      attributes: block.attributes,
+      relationships: block.relationships,
+    })) as typeof result.blocks;
+  }
+
+  return result;
+}
+
+/**
+ * Normalizes the `item` property of block, inlineBlock, and inlineItem nodes.
+ * When fetching with nested: true, the item property can be expanded to a full object
+ * instead of a string ID. DatoCMS expects string IDs when saving.
+ */
+function normalizeNodeItemProperty<T extends DastNode>(node: T): T {
+  // Check if this is a node type that has an item property
+  if (node.type === 'block' || node.type === 'inlineBlock' || node.type === 'inlineItem') {
+    const nodeWithItem = node as T & { item: unknown };
+    const item = nodeWithItem.item;
+    
+    // If item is already a string, no normalization needed
+    if (typeof item === 'string') {
+      return node;
+    }
+    
+    // If item is an object with an id property, extract the string ID
+    if (item && typeof item === 'object') {
+      const itemObj = item as Record<string, unknown>;
+      const stringId = itemObj.id as string | undefined;
+      
+      if (stringId) {
+        // Create a new node with the normalized string ID
+        return {
+          ...node,
+          item: stringId,
+        };
+      }
+    }
+  }
+  
+  return node;
+}
+
+/**
+ * Recursively traverses the DAST tree and adds inlineItem nodes after each
+ * block/inlineBlock node of the target type.
+ * 
+ * For root-level 'block' nodes: inserts a new paragraph with inlineItem after the block
+ * For 'inlineBlock' nodes: inserts an inlineItem directly after the inlineBlock
+ */
+function addInlineItemsAlongsideBlocksInTree<T extends DastNode>(
+  node: T,
+  targetBlockTypeId: string,
+  blocks: DastBlockRecord[],
+  mapping: BlockMigrationMapping,
+  newLinks: Array<{ id: string }>
+): T {
+  // If node has children, process them and potentially insert new nodes
+  if (isNodeWithChildren(node)) {
+    const clonedNode = { ...node } as DastNodeWithChildren;
+    const childrenAreRootLevel = (node as DastNode).type === 'root';
+    
+    // Process children and build new array with inserted inlineItem nodes
+    const newChildren: DastNode[] = [];
+    
+    for (const child of clonedNode.children) {
+      const childNode = child as DastNode;
+      
+      // First, recursively process this child
+      const processedChild = addInlineItemsAlongsideBlocksInTree(
+        childNode,
+        targetBlockTypeId,
+        blocks,
+        mapping,
+        newLinks
+      );
+      
+      // Normalize the item property for block/inlineBlock/inlineItem nodes
+      // When fetching with nested: true, item can be an expanded object instead of string ID
+      // DatoCMS expects string IDs when saving, so we must normalize
+      const normalizedChild = normalizeNodeItemProperty(processedChild);
+      
+      // Add the normalized child
+      newChildren.push(normalizedChild);
+      
+      // Check if this child is a block/inlineBlock of the target type
+      // If so, add an inlineItem node after it
+      if (isBlockNode(childNode) || isInlineBlockNode(childNode)) {
+        const itemId = getBlockNodeItemId(childNode);
+        let blockTypeId = getInlinedBlockTypeId(childNode);
+        
+        if (!blockTypeId && typeof itemId === 'string') {
+          const blockRecord = findBlockRecordById(blocks, itemId);
+          blockTypeId = blockRecord ? getBlockRecordTypeId(blockRecord) : undefined;
+        }
+        
+        if (blockTypeId === targetBlockTypeId && itemId && mapping[itemId]) {
+          const newRecordId = mapping[itemId];
+          
+          // Add to links array
+          newLinks.push({ id: newRecordId });
+          
+          // Create and insert the inlineItem node
+          if (childrenAreRootLevel && childNode.type === 'block') {
+            // For root-level blocks, wrap inlineItem in a paragraph
+            const paragraphWithInlineItem = {
+              type: 'paragraph',
+              children: [
+                {
+                  type: 'span',
+                  value: '',
+                },
+                {
+                  type: 'inlineItem',
+                  item: newRecordId,
+                }
+              ],
+            };
+            newChildren.push(paragraphWithInlineItem as DastNode);
+          } else {
+            // For inline context, just add the inlineItem
+            const inlineItemNode = {
+              type: 'inlineItem',
+              item: newRecordId,
+            };
+            newChildren.push(inlineItemNode as DastNode);
+          }
+        }
+      }
+    }
+    
+    clonedNode.children = newChildren as typeof clonedNode.children;
+    return clonedNode as T;
+  }
+
+  // Return node unchanged if it has no children
+  return node;
 }
 
