@@ -87,6 +87,14 @@ const Icons = {
       <polyline points="16 18 22 12 16 6"></polyline>
       <polyline points="8 6 2 12 8 18"></polyline>
     </svg>
+  ),
+  Info: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <title>Info</title>
+      <circle cx="12" cy="12" r="10"></circle>
+      <line x1="12" y1="16" x2="12" y2="12"></line>
+      <line x1="12" y1="8" x2="12.01" y2="8"></line>
+    </svg>
   )
 };
 
@@ -356,11 +364,15 @@ export default function ConfigScreen({ ctx }: Props) {
                         <h3><span className={s.iconWrapper}><Icons.Block /></span> Block Details</h3>
                         <div className={s.analysisStat}>
                           <span className={s.statLabel}>Name</span>
-                          <span className={s.statValueMain}>{conversionState.analysis.block.name}</span>
+                          <span className={s.statValueMain} title={conversionState.analysis.block.name}>
+                            {conversionState.analysis.block.name}
+                          </span>
                         </div>
                         <div className={s.analysisStat}>
                           <span className={s.statLabel}>API Key</span>
-                          <span className={s.statValueCode}>{conversionState.analysis.block.apiKey}</span>
+                          <span className={s.statValueCode} title={conversionState.analysis.block.apiKey}>
+                            {conversionState.analysis.block.apiKey}
+                          </span>
                         </div>
                       </div>
                       <div className={s.analysisItem}>
@@ -423,16 +435,34 @@ export default function ConfigScreen({ ctx }: Props) {
                     <SwitchField
                       id="fully-replace-block"
                       name="fully-replace-block"
-                      label="Fully replace original block"
-                      hint="When enabled, the original block model and its field data will be deleted after conversion. The new links field will take its place."
+                      label={
+                        <div className={s.labelWithTooltip}>
+                          Fully replace original block
+                          <div className={s.tooltipContainer}>
+                            <Icons.Info />
+                            <div className={s.tooltip}>
+                              When enabled, the original block model and its field data will be deleted after conversion. The new links field will take its place.
+                            </div>
+                          </div>
+                        </div>
+                      }
                       value={fullyReplaceBlock}
                       onChange={(newValue) => setFullyReplaceBlock(newValue)}
                     />
                     <SwitchField
                       id="publish-after-changes"
                       name="publish-after-changes"
-                      label="Publish records after changes"
-                      hint="When enabled, all newly created and updated records will be published after the conversion completes."
+                      label={
+                        <div className={s.labelWithTooltip}>
+                          Publish records after changes
+                          <div className={s.tooltipContainer}>
+                            <Icons.Info />
+                            <div className={s.tooltip}>
+                              When enabled, all newly created and updated records will be published after the conversion completes.
+                            </div>
+                          </div>
+                        </div>
+                      }
                       value={publishAfterChanges}
                       onChange={(newValue) => setPublishAfterChanges(newValue)}
                     />

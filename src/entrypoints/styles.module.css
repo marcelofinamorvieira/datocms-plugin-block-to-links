@@ -112,6 +112,7 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: var(--spacing-xs);
+  gap: var(--spacing-m);
 }
 
 .analysisStat:last-child {
@@ -121,11 +122,17 @@
 .statLabel {
   font-size: 0.9rem;
   color: var(--base-body-color);
+  flex-shrink: 0;
 }
 
 .statValueMain {
   font-weight: 600;
   color: var(--base-body-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  text-align: right;
 }
 
 .statValueCode {
@@ -135,6 +142,11 @@
   background: rgba(0,0,0,0.05);
   padding: 2px 6px;
   border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  text-align: right;
 }
 
 .iconWrapper {
@@ -267,6 +279,70 @@
   padding: var(--spacing-m);
   background: var(--light-bg-color);
   border-radius: var(--border-radius-m);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-m);
+}
+
+.labelWithTooltip {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-s);
+}
+
+.tooltipContainer {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  color: var(--light-body-color);
+  pointer-events: auto;
+}
+
+.tooltipContainer:hover {
+  color: var(--accent-color);
+}
+
+.tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--base-body-color);
+  color: white;
+  padding: var(--spacing-s);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  white-space: normal;
+  width: max-content;
+  max-width: 250px;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.2s, visibility 0.2s;
+  z-index: 1000;
+  pointer-events: none;
+  margin-bottom: 8px;
+  text-align: center;
+  line-height: 1.4;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  font-weight: normal;
+}
+
+.tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin-left: -5px;
+  border-width: 5px;
+  border-style: solid;
+  border-color: var(--base-body-color) transparent transparent transparent;
+}
+
+.tooltipContainer:hover .tooltip {
+  visibility: visible;
+  opacity: 1;
 }
 
 .actions {
@@ -400,4 +476,3 @@
   font-family: var(--font-family-mono);
   color: var(--base-body-color);
 }
-
