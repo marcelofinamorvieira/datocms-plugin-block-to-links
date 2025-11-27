@@ -98,6 +98,9 @@ export default function ConfigScreen({ ctx }: Props) {
   
   // Replacement mode - if true, fully replaces original block; if false, adds link field alongside
   const [fullyReplaceBlock, setFullyReplaceBlock] = useState(false);
+  
+  // Publish mode - if true, publishes records after creating/updating them
+  const [publishAfterChanges, setPublishAfterChanges] = useState(false);
 
   // Create CMA client
   const client = useMemo(() => {
@@ -216,7 +219,7 @@ export default function ConfigScreen({ ctx }: Props) {
     try {
       const result = await convertBlockToModel(client, selectedBlockId, (progress) => {
         setConversionState({ status: 'converting', progress });
-      }, fullyReplaceBlock);
+      }, fullyReplaceBlock, publishAfterChanges);
 
       if (result.success) {
         setConversionState({
@@ -252,13 +255,14 @@ export default function ConfigScreen({ ctx }: Props) {
       setConversionState({ status: 'error', message });
       await ctx.alert(`Conversion failed: ${message}`);
     }
-  }, [client, selectedBlockId, ctx, fullyReplaceBlock]);
+  }, [client, selectedBlockId, ctx, fullyReplaceBlock, publishAfterChanges]);
 
   // Reset state
   const handleReset = useCallback(() => {
     setSelectedBlockId('');
     setConversionState({ status: 'idle' });
     setFullyReplaceBlock(false);
+    setPublishAfterChanges(false);
   }, []);
 
   const blockOptions: Option[] = useMemo(() => {
@@ -423,6 +427,14 @@ export default function ConfigScreen({ ctx }: Props) {
                       hint="When enabled, the original block model and its field data will be deleted after conversion. The new links field will take its place."
                       value={fullyReplaceBlock}
                       onChange={(newValue) => setFullyReplaceBlock(newValue)}
+                    />
+                    <SwitchField
+                      id="publish-after-changes"
+                      name="publish-after-changes"
+                      label="Publish records after changes"
+                      hint="When enabled, all newly created and updated records will be published after the conversion completes."
+                      value={publishAfterChanges}
+                      onChange={(newValue) => setPublishAfterChanges(newValue)}
                     />
                   </div>
 
