@@ -33,7 +33,7 @@ type Option = {
 
 type ConversionState =
   | { status: 'idle' }
-  | { status: 'analyzing' }
+  | { status: 'analyzing'; progressMessage?: string; progressPercentage?: number }
   | { status: 'analyzed'; analysis: BlockAnalysis }
   | { status: 'converting'; progress: ConversionProgress }
   | { status: 'success'; result: { 
@@ -174,10 +174,12 @@ export default function ConfigScreen({ ctx }: Props) {
 
       if (!blockId || !client) return;
 
-      setConversionState({ status: 'analyzing' });
+      setConversionState({ status: 'analyzing', progressMessage: 'Initializing analysis...', progressPercentage: 0 });
 
       try {
-        const analysis = await analyzeBlock(client, blockId);
+        const analysis = await analyzeBlock(client, blockId, (message, percentage) => {
+          setConversionState({ status: 'analyzing', progressMessage: message, progressPercentage: percentage });
+        });
         setConversionState({ status: 'analyzed', analysis });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -399,7 +401,18 @@ export default function ConfigScreen({ ctx }: Props) {
             {conversionState.status === 'analyzing' && (
               <div className={s.loading}>
                 <Spinner size={32} />
-                <p>Analyzing block structure...</p>
+                <div className={s.progressContainer} style={{ width: '100%', maxWidth: '400px', margin: 'var(--spacing-m) 0 0 0' }}>
+                  <div className={s.progressBar}>
+                    <div
+                      className={s.progressFill}
+                      style={{ width: `${conversionState.progressPercentage || 0}%` }}
+                    />
+                  </div>
+                </div>
+                <p className={s.loadingText}>{conversionState.progressMessage || 'Analyzing block structure...'}</p>
+                {conversionState.progressPercentage !== undefined && (
+                   <p className={s.percentageText}>{conversionState.progressPercentage}%</p>
+                )}
               </div>
             )}
 
@@ -491,6 +504,8 @@ export default function ConfigScreen({ ctx }: Props) {
             {conversionState.status === 'converting' && (
               <div className={s.card}>
                 <div className={s.converting}>
+                  <Spinner size={32} />
+                  
                   <div className={s.progressHeader}>
                     <h2>{debugOptions.enabled ? 'Converting (Debug)...' : 'Converting...'}</h2>
                   </div>
@@ -513,8 +528,6 @@ export default function ConfigScreen({ ctx }: Props) {
                       <p className={s.progressDetails}>{conversionState.progress.details}</p>
                     )}
                   </div>
-                  
-                  <Spinner size={32} />
                 </div>
               </div>
             )}

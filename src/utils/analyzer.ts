@@ -91,10 +91,12 @@ async function getFieldsForItemType(client: CMAClient, itemTypeId: string): Prom
  */
 export async function analyzeBlock(
   client: CMAClient,
-  blockId: string
+  blockId: string,
+  onProgress?: (message: string, percentage: number) => void
 ): Promise<BlockAnalysis> {
   clearCaches(); // Start fresh for each analysis
 
+  onProgress?.('Fetching block details...', 5);
   // Get the block model
   const block = await client.itemTypes.find(blockId);
 
@@ -117,21 +119,29 @@ export async function analyzeBlock(
     defaultValue: field.default_value,
   }));
 
+  onProgress?.('Scanning content models for block usage...', 15);
   // Find all modular content fields that reference this block (including nested in other blocks)
   const modularContentFields = await findModularContentFieldsUsingBlock(
     client,
     blockId
   );
 
+  onProgress?.(`Found ${modularContentFields.length} fields using this block. Analyzing nested paths...`, 25);
   // Build nested paths to root models for each field
   const nestedPaths = await buildNestedPathsToRootModels(client, modularContentFields, blockId);
 
   // Count affected records using the nested paths
   let totalAffectedRecords = 0;
-  for (const nestedPath of nestedPaths) {
+  for (let i = 0; i < nestedPaths.length; i++) {
+    const nestedPath = nestedPaths[i];
+    // Calculate percentage from 30% to 100% based on loop progress
+    const loopPercentage = Math.round(30 + ((i / nestedPaths.length) * 70));
+    onProgress?.(`Counting records in model "${nestedPath.rootModelName}" (${i + 1}/${nestedPaths.length})...`, loopPercentage);
     const count = await countRecordsWithNestedBlock(client, nestedPath, blockId);
     totalAffectedRecords += count;
   }
+  
+  onProgress?.('Analysis complete!', 100);
 
   return {
     block: {
