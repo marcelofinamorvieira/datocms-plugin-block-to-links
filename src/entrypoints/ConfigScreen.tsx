@@ -1,3 +1,13 @@
+/**
+ * ConfigScreen Component
+ * 
+ * Main configuration screen for the Block-to-Links converter plugin.
+ * Provides UI for selecting a block model, analyzing its usage, and
+ * converting it to an independent model with links.
+ * 
+ * @module entrypoints/ConfigScreen
+ */
+
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import type { RenderConfigScreenCtx } from 'datocms-plugin-sdk';
 import {
@@ -12,6 +22,7 @@ import {
 import { createClient } from '../utils/client';
 import { analyzeBlock } from '../utils/analyzer';
 import { convertBlockToModel } from '../utils/converter';
+import { Icons } from '../components/Icons';
 import type { BlockAnalysis, ConversionProgress, CleanupContext } from '../types';
 import s from './styles.module.css';
 
@@ -30,6 +41,7 @@ type Option = {
   value: string;
 };
 
+/** Discriminated union for tracking conversion state */
 type ConversionState =
   | { status: 'idle' }
   | { status: 'analyzing'; progressMessage?: string; progressPercentage?: number }
@@ -45,58 +57,6 @@ type ConversionState =
       cleanupContext?: CleanupContext;
     } }
   | { status: 'error'; message: string };
-
-// Icons
-const Icons = {
-  Block: () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-    </svg>
-  ),
-  Database: () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
-      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
-    </svg>
-  ),
-  Field: () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 17l6-6"></path>
-      <path d="M4 7l6 6"></path>
-      <path d="M20 7h-6"></path>
-      <path d="M20 17h-6"></path>
-    </svg>
-  ),
-  Check: () => (
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={s.checkIcon}>
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-      <polyline points="22 4 12 14.01 9 11.01"></polyline>
-    </svg>
-  ),
-  Warning: () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ff9800" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-      <line x1="12" y1="9" x2="12" y2="13"></line>
-      <line x1="12" y1="17" x2="12.01" y2="17"></line>
-    </svg>
-  ),
-  Code: () => (
-     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="16 18 22 12 16 6"></polyline>
-      <polyline points="8 6 2 12 8 18"></polyline>
-    </svg>
-  ),
-  Info: () => (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <title>Info</title>
-      <circle cx="12" cy="12" r="10"></circle>
-      <line x1="12" y1="16" x2="12" y2="12"></line>
-      <line x1="12" y1="8" x2="12.01" y2="8"></line>
-    </svg>
-  )
-};
 
 export default function ConfigScreen({ ctx }: Props) {
   const [selectedBlockId, setSelectedBlockId] = useState<string>('');
@@ -141,14 +101,13 @@ export default function ConfigScreen({ ctx }: Props) {
         setBlockModels(blocks);
       } catch (error) {
         console.error('Failed to fetch block models:', error);
-        await ctx.alert(`Failed to fetch block models: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         setLoadingBlocks(false);
       }
     }
 
     fetchBlockModels();
-  }, [client, ctx]);
+  }, [client]);
 
   // Handle block selection
   const handleBlockSelect = useCallback(

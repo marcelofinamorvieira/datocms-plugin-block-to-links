@@ -1,8 +1,14 @@
+/**
+ * Block-to-Links Converter Styles
+ * 
+ * Styles for the plugin configuration screen UI.
+ */
+
 .container {
   max-width: 800px;
   margin: 0 auto;
   padding: var(--spacing-xl) var(--spacing-l);
-  font-family: colfax-web, "Roboto", "Helvetica Neue", Helvetica, Roboto, Arial, sans-serif;
+  font-family: colfax-web, "Roboto", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
 .header {
@@ -90,9 +96,7 @@
   flex-direction: column;
 }
 
-.analysisSection {
-  /* No extra margin needed as grid above has margin-bottom */
-}
+/* .analysisSection - no extra styles needed, uses default block layout */
 
 .analysisItem h3,
 .analysisSection h3 {
@@ -201,8 +205,9 @@
   background: var(--light-bg-color);
 }
 
-.fieldListItemClickable {
-  padding: 0 !important;
+/* Use higher specificity to override .fieldList li padding */
+.fieldList li.fieldListItemClickable {
+  padding: 0;
 }
 
 .fieldListLink {
@@ -221,10 +226,6 @@
   background: #f0f4ff;
 }
 
-.fieldListLink:hover .fieldInfo strong {
-  color: var(--accent-color);
-}
-
 .fieldInfo {
   display: flex;
   flex-direction: column;
@@ -234,6 +235,11 @@
 .fieldInfo strong {
   font-size: 0.95rem;
   color: var(--base-body-color);
+}
+
+/* Hover state for field label - defined after base .fieldInfo strong */
+.fieldListLink:hover .fieldInfo strong {
+  color: var(--accent-color);
 }
 
 .fieldApiKey {

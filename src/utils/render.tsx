@@ -5,5 +5,5 @@ const container = document.getElementById("root");
 const root = createRoot(container!);
 
 export function render(component: React.ReactNode): void {
-	root.render(<StrictMode>{component}</StrictMode>);
+  root.render(<StrictMode>{component}</StrictMode>);
 }

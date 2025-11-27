@@ -1,28 +1,73 @@
+/**
+ * DatoCMS CMA Client Utilities
+ * 
+ * Provides functions for creating and working with the DatoCMS
+ * Content Management API (CMA) client, including rate limiting helpers.
+ * 
+ * @module utils/client
+ */
+
 import { buildClient, LogLevel } from '@datocms/cma-client-browser';
 import type { CMAClient } from '../types';
 
+// =============================================================================
+// Client Creation
+// =============================================================================
+
 /**
- * Creates a CMA client using the current user's access token
+ * Creates a DatoCMS CMA client configured for browser use.
+ * 
+ * Features:
+ * - Automatic retry on rate limit errors
+ * - Verbose logging in development mode
+ * 
+ * @param apiToken - The user's API access token
+ * @returns Configured CMA client instance
+ * 
+ * @example
+ * const client = createClient(ctx.currentUserAccessToken);
+ * const models = await client.itemTypes.list();
  */
 export function createClient(apiToken: string): CMAClient {
   return buildClient({
     apiToken,
-    // Use default rate limiting
     autoRetry: true,
-    // Log requests in development
     logLevel: (import.meta.env.DEV ? 'BODY' : 'NONE') as unknown as LogLevel,
   });
 }
 
+// =============================================================================
+// Rate Limiting Helpers
+// =============================================================================
+
 /**
- * Helper to add delay between API calls for rate limiting
+ * Creates a promise that resolves after a specified delay.
+ * Useful for rate limiting API calls.
+ * 
+ * @param ms - Delay duration in milliseconds
+ * @returns Promise that resolves after the delay
  */
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Process items in batches with delay between batches
+ * Processes an array of items in batches with a delay between batches.
+ * Helps avoid rate limiting when making many API calls.
+ * 
+ * @param items - Array of items to process
+ * @param batchSize - Number of items to process in parallel per batch
+ * @param processor - Async function to process each item
+ * @param delayMs - Delay between batches in milliseconds (default: 100)
+ * @returns Array of results from all processed items
+ * 
+ * @example
+ * const results = await processBatch(
+ *   blockInstances,
+ *   10,
+ *   async (block) => await client.items.create({ ...block }),
+ *   200
+ * );
  */
 export async function processBatch<T, R>(
   items: T[],

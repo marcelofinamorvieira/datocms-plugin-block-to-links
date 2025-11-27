@@ -4,7 +4,7 @@ import ConfigScreen from "./entrypoints/ConfigScreen";
 import { render } from "./utils/render";
 
 connect({
-	renderConfigScreen(ctx) {
-		return render(<ConfigScreen ctx={ctx} />);
-	},
+  renderConfigScreen(ctx) {
+    return render(<ConfigScreen ctx={ctx} />);
+  },
 });

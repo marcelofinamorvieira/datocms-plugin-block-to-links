@@ -1,3 +1,12 @@
+/**
+ * Block Analysis Utilities
+ * 
+ * Functions for analyzing DatoCMS block models, finding their usage
+ * across the schema, and extracting block instances from records.
+ * 
+ * @module utils/analyzer
+ */
+
 import type {
   CMAClient,
   BlockAnalysis,
@@ -5,15 +14,19 @@ import type {
   ModularContentFieldInfo,
   NestedBlockPath,
   GroupedBlockInstance,
-  StructuredTextValue,
-  DastBlockRecord,
 } from '../types';
 import {
-  isStructuredTextValue,
-  findBlockNodesInDast,
-} from './dast';
+  getBlockTypeId,
+  getBlockId,
+  getBlockAttributes,
+  extractBlocksFromFieldValue,
+} from './blocks';
 
-// Type definitions for caches
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Cached item type information */
 type ItemTypeInfo = {
   id: string;
   name: string;
@@ -32,14 +45,19 @@ type FieldCacheEntry = {
   hint: string | null;
 };
 
-// Cache for item types to avoid repeated API calls
+// =============================================================================
+// Caching
+// =============================================================================
+
+/** Cache for item types to avoid repeated API calls */
 let itemTypesCache: ItemTypeInfo[] | null = null;
 
-// Cache for fields by item type
+/** Cache for fields by item type */
 const fieldsCache: Map<string, FieldCacheEntry[]> = new Map();
 
 /**
- * Clears caches - call this before starting a new analysis
+ * Clears all caches.
+ * Call this before starting a new analysis to ensure fresh data.
  */
 export function clearCaches(): void {
   itemTypesCache = null;
@@ -86,8 +104,23 @@ async function getFieldsForItemType(client: CMAClient, itemTypeId: string): Prom
   return mapped;
 }
 
+// =============================================================================
+// Block Analysis
+// =============================================================================
+
 /**
- * Analyzes a block model to understand its structure and usage
+ * Analyzes a block model to understand its structure and usage.
+ * 
+ * This function:
+ * 1. Fetches the block's field definitions
+ * 2. Finds all modular content fields that use this block
+ * 3. Builds nested paths from root models to this block
+ * 4. Counts affected records
+ * 
+ * @param client - DatoCMS CMA client
+ * @param blockId - ID of the block model to analyze
+ * @param onProgress - Optional callback for progress updates
+ * @returns Analysis results including block info, fields, and usage data
  */
 export async function analyzeBlock(
   client: CMAClient,
@@ -130,15 +163,23 @@ export async function analyzeBlock(
   // Build nested paths to root models for each field
   const nestedPaths = await buildNestedPathsToRootModels(client, modularContentFields, blockId);
 
-  // Count affected records using the nested paths
+  // Group paths by root model for efficient counting (one scan per root model)
+  const pathsByRootModel = groupPathsByRootModelId(nestedPaths);
+
+  // Count affected records - scan each root model once and check all paths
   let totalAffectedRecords = 0;
-  for (let i = 0; i < nestedPaths.length; i++) {
-    const nestedPath = nestedPaths[i];
+  let groupIndex = 0;
+  const groupCount = pathsByRootModel.size;
+
+  for (const [rootModelId, paths] of pathsByRootModel) {
+    const rootModelName = paths[0].rootModelName;
     // Calculate percentage from 30% to 100% based on loop progress
-    const loopPercentage = Math.round(30 + ((i / nestedPaths.length) * 70));
-    onProgress?.(`Counting records in model "${nestedPath.rootModelName}" (${i + 1}/${nestedPaths.length})...`, loopPercentage);
-    const count = await countRecordsWithNestedBlock(client, nestedPath, blockId);
+    const loopPercentage = Math.round(30 + ((groupIndex / groupCount) * 70));
+    onProgress?.(`Counting records in model "${rootModelName}" (${groupIndex + 1}/${groupCount})...`, loopPercentage);
+    
+    const count = await countRecordsWithBlockAcrossPaths(client, rootModelId, paths, blockId);
     totalAffectedRecords += count;
+    groupIndex++;
   }
   
   onProgress?.('Analysis complete!', 100);
@@ -250,9 +291,21 @@ async function findModularContentFieldsUsingBlock(
   return result;
 }
 
+// =============================================================================
+// Nested Path Building
+// =============================================================================
+
 /**
  * Recursively finds all paths from root models (non-blocks) to modular content fields.
  * Handles arbitrarily deep nesting of blocks within blocks.
+ * 
+ * For example, if a target block is used inside another block which is used in a page,
+ * this function will build the full path: Page → Parent Block Field → Target Block Field
+ * 
+ * @param client - DatoCMS CMA client
+ * @param modularContentFields - Fields that use the target block
+ * @param targetBlockId - ID of the block being analyzed
+ * @returns Array of paths from root models to the target block's fields
  */
 export async function buildNestedPathsToRootModels(
   client: CMAClient,
@@ -314,6 +367,26 @@ export async function buildNestedPathsToRootModels(
  */
 export function isBlockInLocalizedContext(nestedPath: NestedBlockPath): boolean {
   return nestedPath.isInLocalizedContext;
+}
+
+/**
+ * Groups nested paths by their root model ID.
+ * This enables efficient record scanning by processing all paths
+ * for a given root model in a single pass.
+ * 
+ * @param nestedPaths - Array of nested paths to group
+ * @returns Map of root model ID to array of paths for that model
+ */
+function groupPathsByRootModelId(
+  nestedPaths: NestedBlockPath[]
+): Map<string, NestedBlockPath[]> {
+  const grouped = new Map<string, NestedBlockPath[]>();
+  for (const path of nestedPaths) {
+    const existing = grouped.get(path.rootModelId) || [];
+    existing.push(path);
+    grouped.set(path.rootModelId, existing);
+  }
+  return grouped;
 }
 
 /**
@@ -417,77 +490,47 @@ async function findPathsToBlock(
   return result;
 }
 
-/**
- * Extracts the block type ID from a block object
- */
-export function getBlockTypeId(block: Record<string, unknown>): string | undefined {
-  // Check for __itemTypeId first (convenience property)
-  if (typeof block.__itemTypeId === 'string') {
-    return block.__itemTypeId;
-  }
+// =============================================================================
+// Block Utility Re-exports (from ./blocks.ts)
+// =============================================================================
 
-  // Check for relationships.item_type.data.id (nested structure from CMA client)
-  const relationships = block.relationships as Record<string, unknown> | undefined;
-  if (relationships) {
-    const itemTypeRel = relationships.item_type as Record<string, unknown> | undefined;
-    if (itemTypeRel) {
-      const data = itemTypeRel.data as Record<string, unknown> | undefined;
-      if (data && typeof data.id === 'string') {
-        return data.id;
-      }
-    }
-  }
+// Re-export block utilities for backwards compatibility
+export { getBlockTypeId, getBlockId, getBlockAttributes } from './blocks';
 
-  // Fallback: check for item_type directly (string or object with id)
-  const itemType = block.item_type;
-  if (typeof itemType === 'string') {
-    return itemType;
-  }
-  if (itemType && typeof itemType === 'object') {
-    const obj = itemType as Record<string, unknown>;
-    if (typeof obj.id === 'string') {
-      return obj.id;
-    }
-  }
-
-  return undefined;
-}
+// =============================================================================
+// Record Counting
+// =============================================================================
 
 /**
- * Gets the block ID from a block object
+ * Counts records that contain the target block across multiple paths in a single scan.
+ * This is more efficient than scanning once per path, and correctly counts unique
+ * records (a record with the block in multiple fields counts as 1, not N).
+ * 
+ * @param client - DatoCMS CMA client
+ * @param rootModelId - ID of the root model to scan
+ * @param paths - All nested paths for this root model
+ * @param targetBlockId - ID of the block type to find
+ * @returns Count of unique records containing the block
  */
-export function getBlockId(block: Record<string, unknown>): string | undefined {
-  if (typeof block.id === 'string') {
-    return block.id;
-  }
-  return undefined;
-}
-
-/**
- * Gets block attributes/data from a block object
- */
-export function getBlockAttributes(block: Record<string, unknown>): Record<string, unknown> {
-  const attributes = block.attributes as Record<string, unknown> | undefined;
-  return attributes || {};
-}
-
-/**
- * Counts records that contain the target block following a nested path
- */
-async function countRecordsWithNestedBlock(
+async function countRecordsWithBlockAcrossPaths(
   client: CMAClient,
-  nestedPath: NestedBlockPath,
+  rootModelId: string,
+  paths: NestedBlockPath[],
   targetBlockId: string
 ): Promise<number> {
   let count = 0;
 
   for await (const record of client.items.listPagedIterator({
-    filter: { type: nestedPath.rootModelId },
+    filter: { type: rootModelId },
     nested: true,
     version: 'current', // Fetch draft version to get latest changes
   })) {
-    if (recordContainsBlockAtPath(record, nestedPath.path, targetBlockId)) {
-      count++;
+    // Check if record contains block in ANY of the paths
+    for (const path of paths) {
+      if (recordContainsBlockAtPath(record, path.path, targetBlockId)) {
+        count++;
+        break; // Found in at least one path, count once and move to next record
+      }
     }
   }
 
@@ -495,7 +538,7 @@ async function countRecordsWithNestedBlock(
 }
 
 /**
- * Checks if a record contains the target block following the given path
+ * Checks if a record contains the target block following the given path.
  */
 function recordContainsBlockAtPath(
   record: Record<string, unknown>,
@@ -505,120 +548,11 @@ function recordContainsBlockAtPath(
   return findBlocksAtPath(record, path, targetBlockId).length > 0;
 }
 
-/**
- * Extracts blocks from a field value based on field type.
- * - rich_text: value is directly an array of blocks
- * - structured_text: uses DAST traversal to find only blocks that are actually referenced
- *   in the document tree (via block/inlineBlock nodes)
- * - single_block: value is a single block object
- */
-function extractBlocksFromFieldValue(
-  fieldValue: unknown,
-  fieldType: 'rich_text' | 'structured_text' | 'single_block'
-): unknown[] {
-  if (!fieldValue) return [];
+// extractBlocksFromFieldValue is now imported from ./blocks.ts
 
-  if (fieldType === 'rich_text') {
-    // Rich text (modular content) - value is directly an array of blocks
-    if (Array.isArray(fieldValue)) {
-      return fieldValue;
-    }
-    return [];
-  } else if (fieldType === 'structured_text') {
-    // Structured text - we need to traverse the DAST document to find block references
-    // Only return blocks that are actually referenced in the document tree
-    return extractBlocksFromStructuredTextValue(fieldValue);
-  } else if (fieldType === 'single_block') {
-    // Single block - value is a single block object (not an array)
-    if (typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
-      return [fieldValue]; // Wrap in array for consistent processing
-    }
-    return [];
-  }
-
-  return [];
-}
-
-/**
- * Extracts blocks from a structured text field value by:
- * 1. Traversing the DAST document to find block/inlineBlock node references
- * 2. Returning only the blocks that are actually referenced in the document
- * 
- * This is important because the blocks array may contain blocks that were
- * previously used but are no longer referenced in the document.
- */
-function extractBlocksFromStructuredTextValue(fieldValue: unknown): DastBlockRecord[] {
-  if (!isStructuredTextValue(fieldValue)) {
-    // Fallback: if it's not a proper structured text value, try old approach
-    if (typeof fieldValue === 'object' && fieldValue !== null) {
-      const stValue = fieldValue as Record<string, unknown>;
-      const blocks = stValue.blocks;
-      if (Array.isArray(blocks)) {
-        return blocks as DastBlockRecord[];
-      }
-    }
-    return [];
-  }
-
-  const structuredText = fieldValue as StructuredTextValue;
-  const blocks = structuredText.blocks || [];
-  
-  // Get document children and check for block/inlineBlock types
-  const doc = structuredText.document as unknown as Record<string, unknown>;
-  const children = doc?.children as unknown[] || [];
-  const allChildTypes = children.map((c: unknown) => (c as Record<string, unknown>)?.type);
-  
-  // Check if there are any 'block' or 'inlineBlock' types in the children
-  const hasBlockTypes = allChildTypes.some((t) => t === 'block' || t === 'inlineBlock');
-  
-  if (hasBlockTypes) {
-    // Find the actual block nodes
-    const blockChildren = children.filter((c: unknown) => {
-      const child = c as Record<string, unknown>;
-      return child?.type === 'block' || child?.type === 'inlineBlock';
-    });
-    
-    // With nested: true, blocks are inlined in the document tree
-    // The 'item' property contains the full block object, not just an ID
-    const inlineBlocks: DastBlockRecord[] = blockChildren.map((child) => {
-      const blockNode = child as Record<string, unknown>;
-      const itemData = blockNode.item;
-      
-      // If item is an object (inlined block), extract it
-      if (itemData && typeof itemData === 'object') {
-        return itemData as DastBlockRecord;
-      }
-      // If item is just an ID string, we need to look it up in blocks array
-      if (typeof itemData === 'string' && blocks.length > 0) {
-        const found = blocks.find((b) => b.id === itemData);
-        if (found) return found;
-      }
-      return null;
-    }).filter((b): b is DastBlockRecord => b !== null);
-    
-    if (inlineBlocks.length > 0) {
-      return inlineBlocks;
-    }
-  }
-  
-  // Fallback to the original approach for cases where blocks array is populated
-  if (blocks.length === 0) {
-    return [];
-  }
-
-  // Find all block/inlineBlock nodes in the document
-  const blockNodes = findBlockNodesInDast(structuredText);
-  
-  if (blockNodes.length === 0) {
-    return [];
-  }
-
-  // Get the IDs of blocks that are actually referenced
-  const referencedBlockIds = new Set(blockNodes.map(node => node.itemId));
-  
-  // Return only blocks that are referenced in the document
-  return blocks.filter(block => referencedBlockIds.has(block.id));
-}
+// =============================================================================
+// Block Finding
+// =============================================================================
 
 /**
  * Finds all target block instances in a record following the given path.
@@ -705,8 +639,17 @@ export function findBlocksAtPath(
   return results;
 }
 
+// =============================================================================
+// Block Instance Extraction
+// =============================================================================
+
 /**
  * Gets all block instances of a specific type from all records, following nested paths.
+ * 
+ * @param client - DatoCMS CMA client
+ * @param nestedPath - Path from root model to the block field
+ * @param targetBlockId - ID of the block type to find
+ * @returns Array of block instances with their data and location info
  */
 export async function getAllBlockInstancesNested(
   client: CMAClient,
