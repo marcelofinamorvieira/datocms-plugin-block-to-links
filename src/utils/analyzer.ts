@@ -49,48 +49,60 @@ type FieldCacheEntry = {
 // Caching
 // =============================================================================
 
-/** Cache for item types to avoid repeated API calls */
-let itemTypesCache: ItemTypeInfo[] | null = null;
-
-/** Cache for fields by item type */
-const fieldsCache: Map<string, FieldCacheEntry[]> = new Map();
+/** Cache for item types by ID */
+const itemTypesCache: Map<string, ItemTypeInfo> = new Map();
 
 /**
  * Clears all caches.
  * Call this before starting a new analysis to ensure fresh data.
  */
 export function clearCaches(): void {
-  itemTypesCache = null;
-  fieldsCache.clear();
+  itemTypesCache.clear();
 }
 
 /**
- * Gets all item types (cached)
+ * Gets item type info with caching.
+ * 
+ * @param client - DatoCMS CMA client
+ * @param itemTypeId - ID of the item type to fetch
+ * @returns Item type information
  */
-async function getAllItemTypes(client: CMAClient): Promise<ItemTypeInfo[]> {
-  if (itemTypesCache === null) {
-    const itemTypes = await client.itemTypes.list();
-    itemTypesCache = itemTypes.map(it => ({
-      id: it.id,
-      name: it.name,
-      api_key: it.api_key,
-      modular_block: it.modular_block,
-    }));
-  }
-  return itemTypesCache;
-}
-
-/**
- * Gets fields for an item type (cached)
- */
-async function getFieldsForItemType(client: CMAClient, itemTypeId: string): Promise<FieldCacheEntry[]> {
-  const cached = fieldsCache.get(itemTypeId);
+async function getItemTypeInfo(client: CMAClient, itemTypeId: string): Promise<ItemTypeInfo> {
+  const cached = itemTypesCache.get(itemTypeId);
   if (cached) {
     return cached;
   }
   
-  const fields = await client.fields.list(itemTypeId);
-  const mapped = fields.map(f => ({
+  const itemType = await client.itemTypes.find(itemTypeId);
+  const info: ItemTypeInfo = {
+    id: itemType.id,
+    name: itemType.name,
+    api_key: itemType.api_key,
+    modular_block: itemType.modular_block,
+  };
+  itemTypesCache.set(itemTypeId, info);
+  return info;
+}
+
+/** Extended field info with parent item type ID */
+type ReferencingFieldInfo = FieldCacheEntry & {
+  item_type_id: string;
+};
+
+/**
+ * Gets all fields that reference a specific block using the fields.referencing() API.
+ * This is more efficient than fetching all models and their fields.
+ * 
+ * @param client - DatoCMS CMA client
+ * @param blockId - ID of the block to find referencing fields for
+ * @returns Array of fields that reference this block with their parent item type ID
+ */
+async function getReferencingFields(
+  client: CMAClient,
+  blockId: string
+): Promise<ReferencingFieldInfo[]> {
+  const fields = await client.fields.referencing(blockId);
+  return fields.map(f => ({
     id: f.id,
     label: f.label,
     api_key: f.api_key,
@@ -99,9 +111,8 @@ async function getFieldsForItemType(client: CMAClient, itemTypeId: string): Prom
     validators: f.validators as Record<string, unknown>,
     position: f.position,
     hint: f.hint,
+    item_type_id: f.item_type.id,
   }));
-  fieldsCache.set(itemTypeId, mapped);
-  return mapped;
 }
 
 // =============================================================================
@@ -197,94 +208,87 @@ export async function analyzeBlock(
 }
 
 /**
- * Finds all modular content fields (rich_text or structured_text) that use the specified block.
+ * Finds all modular content fields (rich_text, structured_text, or single_block) that use the specified block.
  * This includes fields in other blocks (for nested block scenarios).
+ * 
+ * Uses the fields.referencing() API to efficiently get only fields that
+ * reference this block, rather than fetching all fields from all models.
  */
 async function findModularContentFieldsUsingBlock(
   client: CMAClient,
   blockId: string
 ): Promise<ModularContentFieldInfo[]> {
+  // Use fields.referencing() to get only fields that reference this block
+  const referencingFields = await getReferencingFields(client, blockId);
+  
+  // Filter for modular content field types and collect unique item type IDs
+  const relevantFieldTypes = ['rich_text', 'structured_text', 'single_block'];
+  const relevantFields = referencingFields.filter(f => relevantFieldTypes.includes(f.field_type));
+  
+  // Batch fetch item type info for all unique parent models
+  const uniqueItemTypeIds = [...new Set(relevantFields.map(f => f.item_type_id))];
+  const itemTypesMap = new Map<string, ItemTypeInfo>();
+  
+  await Promise.all(
+    uniqueItemTypeIds.map(async (id) => {
+      const info = await getItemTypeInfo(client, id);
+      itemTypesMap.set(id, info);
+    })
+  );
+  
+  // Build the result array
   const result: ModularContentFieldInfo[] = [];
-  const itemTypes = await getAllItemTypes(client);
-
-  for (const itemType of itemTypes) {
-    const fields = await getFieldsForItemType(client, itemType.id);
-
-    for (const field of fields) {
-      // Check if it's a modular content field (rich_text in API)
-      if (field.field_type === 'rich_text') {
-        const validators = field.validators;
-        const richTextBlocks = validators.rich_text_blocks as
-          | { item_types: string[] }
-          | undefined;
-
-        if (richTextBlocks?.item_types?.includes(blockId)) {
-          result.push({
-            id: field.id,
-            label: field.label,
-            apiKey: field.api_key,
-            parentModelId: itemType.id,
-            parentModelName: itemType.name,
-            parentModelApiKey: itemType.api_key,
-            parentIsBlock: itemType.modular_block,
-            localized: field.localized,
-            allowedBlockIds: richTextBlocks.item_types,
-            position: field.position,
-            hint: field.hint || undefined,
-            fieldType: 'rich_text',
-          });
-        }
+  
+  for (const field of relevantFields) {
+    const itemType = itemTypesMap.get(field.item_type_id);
+    if (!itemType) continue; // Skip if item type not found (shouldn't happen)
+    
+    // Validate that the block ID is actually in the validators
+    // (fields.referencing may return stale references)
+    let allowedBlockIds: string[] | undefined;
+    let fieldType: 'rich_text' | 'structured_text' | 'single_block' | undefined;
+    
+    if (field.field_type === 'rich_text') {
+      const richTextBlocks = field.validators.rich_text_blocks as
+        | { item_types: string[] }
+        | undefined;
+      if (richTextBlocks?.item_types?.includes(blockId)) {
+        allowedBlockIds = richTextBlocks.item_types;
+        fieldType = 'rich_text';
       }
-
-      // Also check structured_text fields which can contain blocks
-      if (field.field_type === 'structured_text') {
-        const validators = field.validators;
-        const structuredTextBlocks = validators.structured_text_blocks as
-          | { item_types: string[] }
-          | undefined;
-
-        if (structuredTextBlocks?.item_types?.includes(blockId)) {
-          result.push({
-            id: field.id,
-            label: field.label,
-            apiKey: field.api_key,
-            parentModelId: itemType.id,
-            parentModelName: itemType.name,
-            parentModelApiKey: itemType.api_key,
-            parentIsBlock: itemType.modular_block,
-            localized: field.localized,
-            allowedBlockIds: structuredTextBlocks.item_types,
-            position: field.position,
-            hint: field.hint || undefined,
-            fieldType: 'structured_text',
-          });
-        }
+    } else if (field.field_type === 'structured_text') {
+      const structuredTextBlocks = field.validators.structured_text_blocks as
+        | { item_types: string[] }
+        | undefined;
+      if (structuredTextBlocks?.item_types?.includes(blockId)) {
+        allowedBlockIds = structuredTextBlocks.item_types;
+        fieldType = 'structured_text';
       }
-
-      // Also check single_block fields which can contain exactly one block
-      if (field.field_type === 'single_block') {
-        const validators = field.validators;
-        const singleBlockBlocks = validators.single_block_blocks as
-          | { item_types: string[] }
-          | undefined;
-
-        if (singleBlockBlocks?.item_types?.includes(blockId)) {
-          result.push({
-            id: field.id,
-            label: field.label,
-            apiKey: field.api_key,
-            parentModelId: itemType.id,
-            parentModelName: itemType.name,
-            parentModelApiKey: itemType.api_key,
-            parentIsBlock: itemType.modular_block,
-            localized: field.localized,
-            allowedBlockIds: singleBlockBlocks.item_types,
-            position: field.position,
-            hint: field.hint || undefined,
-            fieldType: 'single_block',
-          });
-        }
+    } else if (field.field_type === 'single_block') {
+      const singleBlockBlocks = field.validators.single_block_blocks as
+        | { item_types: string[] }
+        | undefined;
+      if (singleBlockBlocks?.item_types?.includes(blockId)) {
+        allowedBlockIds = singleBlockBlocks.item_types;
+        fieldType = 'single_block';
       }
+    }
+    
+    if (allowedBlockIds && fieldType) {
+      result.push({
+        id: field.id,
+        label: field.label,
+        apiKey: field.api_key,
+        parentModelId: itemType.id,
+        parentModelName: itemType.name,
+        parentModelApiKey: itemType.api_key,
+        parentIsBlock: itemType.modular_block,
+        localized: field.localized,
+        allowedBlockIds,
+        position: field.position,
+        hint: field.hint || undefined,
+        fieldType,
+      });
     }
   }
 
@@ -313,7 +317,6 @@ export async function buildNestedPathsToRootModels(
   targetBlockId: string
 ): Promise<NestedBlockPath[]> {
   const result: NestedBlockPath[] = [];
-  const itemTypes = await getAllItemTypes(client);
 
   for (const mcField of modularContentFields) {
     if (!mcField.parentIsBlock) {
@@ -334,7 +337,8 @@ export async function buildNestedPathsToRootModels(
       });
     } else {
       // Parent is a block - need to recursively find paths to root models
-      const pathsToParent = await findPathsToBlock(client, mcField.parentModelId, itemTypes, new Set());
+      // Use the referencing API to find models that reference this parent block
+      const pathsToParent = await findPathsToBlock(client, mcField.parentModelId, new Set());
       
       for (const pathToParent of pathsToParent) {
         // Append the current field to the path
@@ -392,11 +396,13 @@ function groupPathsByRootModelId(
 /**
  * Recursively finds all paths from root models to a specific block type.
  * Returns paths that lead to the block, not including the fields within the block.
+ * 
+ * Uses the fields.referencing() API to efficiently find only fields that
+ * reference this block at each recursion level.
  */
 async function findPathsToBlock(
   client: CMAClient,
   blockId: string,
-  itemTypes: ItemTypeInfo[],
   visitedBlocks: Set<string> // Prevent infinite loops with circular references
 ): Promise<Array<{
   rootModelId: string;
@@ -417,71 +423,86 @@ async function findPathsToBlock(
     path: NestedBlockPath['path'];
   }> = [];
 
-  // Find all modular content fields that contain this block
-  for (const itemType of itemTypes) {
-    const fields = await getFieldsForItemType(client, itemType.id);
+  // Use fields.referencing() to get only fields that reference this block
+  const referencingFields = await getReferencingFields(client, blockId);
+  
+  // Filter for modular content field types
+  const relevantFieldTypes = ['rich_text', 'structured_text', 'single_block'];
+  const relevantFields = referencingFields.filter(f => relevantFieldTypes.includes(f.field_type));
+  
+  // Batch fetch item type info for all unique parent models
+  const uniqueItemTypeIds = [...new Set(relevantFields.map(f => f.item_type_id))];
+  const itemTypesMap = new Map<string, ItemTypeInfo>();
+  
+  await Promise.all(
+    uniqueItemTypeIds.map(async (id) => {
+      const info = await getItemTypeInfo(client, id);
+      itemTypesMap.set(id, info);
+    })
+  );
 
-    for (const field of fields) {
-      let containsBlock = false;
-      let fieldType: 'rich_text' | 'structured_text' | 'single_block' = 'rich_text';
-      
-      if (field.field_type === 'rich_text') {
-        const validators = field.validators;
-        const richTextBlocks = validators.rich_text_blocks as
-          | { item_types: string[] }
-          | undefined;
-        containsBlock = richTextBlocks?.item_types?.includes(blockId) ?? false;
-        fieldType = 'rich_text';
-      } else if (field.field_type === 'structured_text') {
-        const validators = field.validators;
-        const structuredTextBlocks = validators.structured_text_blocks as
-          | { item_types: string[] }
-          | undefined;
-        containsBlock = structuredTextBlocks?.item_types?.includes(blockId) ?? false;
-        fieldType = 'structured_text';
-      } else if (field.field_type === 'single_block') {
-        const validators = field.validators;
-        const singleBlockBlocks = validators.single_block_blocks as
-          | { item_types: string[] }
-          | undefined;
-        containsBlock = singleBlockBlocks?.item_types?.includes(blockId) ?? false;
-        fieldType = 'single_block';
-      }
+  // Process each field
+  for (const field of relevantFields) {
+    const itemType = itemTypesMap.get(field.item_type_id);
+    if (!itemType) continue; // Skip if item type not found (shouldn't happen)
+    
+    // Validate and determine field type
+    let containsBlock = false;
+    let fieldType: 'rich_text' | 'structured_text' | 'single_block' = 'rich_text';
+    
+    if (field.field_type === 'rich_text') {
+      const richTextBlocks = field.validators.rich_text_blocks as
+        | { item_types: string[] }
+        | undefined;
+      containsBlock = richTextBlocks?.item_types?.includes(blockId) ?? false;
+      fieldType = 'rich_text';
+    } else if (field.field_type === 'structured_text') {
+      const structuredTextBlocks = field.validators.structured_text_blocks as
+        | { item_types: string[] }
+        | undefined;
+      containsBlock = structuredTextBlocks?.item_types?.includes(blockId) ?? false;
+      fieldType = 'structured_text';
+    } else if (field.field_type === 'single_block') {
+      const singleBlockBlocks = field.validators.single_block_blocks as
+        | { item_types: string[] }
+        | undefined;
+      containsBlock = singleBlockBlocks?.item_types?.includes(blockId) ?? false;
+      fieldType = 'single_block';
+    }
 
-      if (containsBlock) {
-        if (!itemType.modular_block) {
-          // Found a root model - this is a complete path
+    if (containsBlock) {
+      if (!itemType.modular_block) {
+        // Found a root model - this is a complete path
+        result.push({
+          rootModelId: itemType.id,
+          rootModelName: itemType.name,
+          rootModelApiKey: itemType.api_key,
+          path: [{
+            fieldApiKey: field.api_key,
+            expectedBlockTypeId: blockId,
+            localized: field.localized,
+            fieldType,
+          }],
+        });
+      } else {
+        // Parent is also a block - recurse upward
+        const pathsToParent = await findPathsToBlock(client, itemType.id, visitedBlocks);
+        
+        for (const pathToParent of pathsToParent) {
           result.push({
-            rootModelId: itemType.id,
-            rootModelName: itemType.name,
-            rootModelApiKey: itemType.api_key,
-            path: [{
-              fieldApiKey: field.api_key,
-              expectedBlockTypeId: blockId,
-              localized: field.localized,
-              fieldType,
-            }],
+            rootModelId: pathToParent.rootModelId,
+            rootModelName: pathToParent.rootModelName,
+            rootModelApiKey: pathToParent.rootModelApiKey,
+            path: [
+              ...pathToParent.path,
+              {
+                fieldApiKey: field.api_key,
+                expectedBlockTypeId: blockId,
+                localized: field.localized,
+                fieldType,
+              },
+            ],
           });
-        } else {
-          // Parent is also a block - recurse upward
-          const pathsToParent = await findPathsToBlock(client, itemType.id, itemTypes, visitedBlocks);
-          
-          for (const pathToParent of pathsToParent) {
-            result.push({
-              rootModelId: pathToParent.rootModelId,
-              rootModelName: pathToParent.rootModelName,
-              rootModelApiKey: pathToParent.rootModelApiKey,
-              path: [
-                ...pathToParent.path,
-                {
-                  fieldApiKey: field.api_key,
-                  expectedBlockTypeId: blockId,
-                  localized: field.localized,
-                  fieldType,
-                },
-              ],
-            });
-          }
         }
       }
     }
