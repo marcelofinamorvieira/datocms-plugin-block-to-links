@@ -14,7 +14,7 @@ import type {
   GroupedBlockInstance,
   StructuredTextValue,
 } from '../../types';
-import { getBlockTypeId, getBlockId, extractBlocksFromFieldValue } from '../blocks';
+import { getBlockTypeId, getBlockId } from '../blocks';
 import { wrapFieldsInLocalizedHash, mergeLocaleData, completeLocalizedUpdate } from '../locale';
 import {
   sanitizeFieldValuesForCreation,
@@ -32,6 +32,7 @@ import {
   extractLinksFromStructuredText,
   addInlineItemsAlongsideBlocks,
 } from '../dast';
+import { findBlocksAtPath } from '../analyzer';
 
 // =============================================================================
 // Types
@@ -836,84 +837,6 @@ async function getAllBlockInstancesNested(
   }
 
   return instances;
-}
-
-/**
- * Finds all target block instances in a record following the given path.
- */
-function findBlocksAtPath(
-  record: Record<string, unknown>,
-  path: NestedBlockPath['path'],
-  targetBlockId: string
-): Array<{
-  block: Record<string, unknown>;
-  pathIndices: number[];
-  locale: string | null;
-}> {
-  const results: Array<{
-    block: Record<string, unknown>;
-    pathIndices: number[];
-    locale: string | null;
-  }> = [];
-
-  function traverse(
-    currentData: Record<string, unknown>,
-    pathIndex: number,
-    currentIndices: number[],
-    locale: string | null
-  ): void {
-    if (pathIndex >= path.length) return;
-
-    const step = path[pathIndex];
-    const fieldValue = currentData[step.fieldApiKey];
-
-    if (!fieldValue) return;
-
-    const processBlocks = (blocks: unknown[], loc: string | null) => {
-      if (!Array.isArray(blocks)) return;
-
-      blocks.forEach((block, index) => {
-        if (!block || typeof block !== 'object') return;
-        const blockObj = block as Record<string, unknown>;
-        const blockTypeId = getBlockTypeId(blockObj);
-
-        if (pathIndex === path.length - 1) {
-          if (blockTypeId === targetBlockId) {
-            results.push({
-              block: blockObj,
-              pathIndices: [...currentIndices, index],
-              locale: loc,
-            });
-          }
-        } else {
-          if (blockTypeId === step.expectedBlockTypeId) {
-            const attributes = blockObj.attributes as Record<string, unknown> | undefined;
-            const blockData = attributes || {};
-            traverse(
-              { ...blockData, ...blockObj },
-              pathIndex + 1,
-              [...currentIndices, index],
-              loc
-            );
-          }
-        }
-      });
-    };
-
-    if (step.localized && typeof fieldValue === 'object' && !Array.isArray(fieldValue)) {
-      for (const loc of Object.keys(fieldValue as Record<string, unknown>)) {
-        const localeValue = (fieldValue as Record<string, unknown>)[loc];
-        const blocks = extractBlocksFromFieldValue(localeValue, step.fieldType);
-        processBlocks(blocks, loc);
-      }
-    } else {
-      const blocks = extractBlocksFromFieldValue(fieldValue, step.fieldType);
-      processBlocks(blocks, locale);
-    }
-  }
-
-  traverse(record, 0, [], null);
-  return results;
 }
 
 /**

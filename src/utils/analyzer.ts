@@ -505,13 +505,6 @@ async function findPathsToBlock(
 }
 
 // =============================================================================
-// Block Utility Re-exports (from ./blocks.ts)
-// =============================================================================
-
-// Re-export block utilities for backwards compatibility
-export { getBlockTypeId, getBlockId, getBlockAttributes } from './blocks';
-
-// =============================================================================
 // Record Counting
 // =============================================================================
 

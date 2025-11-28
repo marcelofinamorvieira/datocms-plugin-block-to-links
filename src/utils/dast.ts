@@ -23,6 +23,7 @@ import type {
   DastBlockRecord,
   BlockMigrationMapping,
 } from '../types';
+import { getBlockTypeId } from './blocks';
 
 // =============================================================================
 // Type Guards
@@ -79,30 +80,8 @@ export function getBlockNodeItemId(node: Block | InlineBlock): string | undefine
 export function getInlinedBlockTypeId(node: Block | InlineBlock): string | undefined {
   const item = node.item;
   if (item && typeof item === 'object') {
-    const inlinedBlock = item as Record<string, unknown>;
-    
-    // Check for __itemTypeId (convenience property added by CMA)
-    if (typeof inlinedBlock.__itemTypeId === 'string') {
-      return inlinedBlock.__itemTypeId;
-    }
-    
-    // Check for relationships.item_type.data.id
-    const relationships = inlinedBlock.relationships as Record<string, unknown> | undefined;
-    if (relationships?.item_type) {
-      const itemType = relationships.item_type as Record<string, unknown>;
-      const data = itemType.data as Record<string, unknown> | undefined;
-      if (data?.id) {
-        return data.id as string;
-      }
-    }
-    
-    // Check for item_type directly
-    if (typeof inlinedBlock.item_type === 'string') {
-      return inlinedBlock.item_type;
-    }
-    if (inlinedBlock.item_type && typeof inlinedBlock.item_type === 'object') {
-      return (inlinedBlock.item_type as { id: string }).id;
-    }
+    // Delegate to the shared getBlockTypeId function
+    return getBlockTypeId(item as Record<string, unknown>);
   }
   return undefined;
 }
@@ -115,25 +94,8 @@ export function getInlinedBlockTypeId(node: Block | InlineBlock): string | undef
  * Gets the block type ID from a block record in the blocks array
  */
 export function getBlockRecordTypeId(block: DastBlockRecord): string | undefined {
-  // Check for __itemTypeId first (convenience property)
-  if (typeof block.__itemTypeId === 'string') {
-    return block.__itemTypeId;
-  }
-
-  // Check for relationships.item_type.data.id (nested structure from CMA client)
-  if (block.relationships?.item_type?.data?.id) {
-    return block.relationships.item_type.data.id;
-  }
-
-  // Fallback: check for item_type directly (string or object with id)
-  if (typeof block.item_type === 'string') {
-    return block.item_type;
-  }
-  if (block.item_type && typeof block.item_type === 'object') {
-    return (block.item_type as { id: string }).id;
-  }
-
-  return undefined;
+  // Delegate to the shared getBlockTypeId function
+  return getBlockTypeId(block as Record<string, unknown>);
 }
 
 /**

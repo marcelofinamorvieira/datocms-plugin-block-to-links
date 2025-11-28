@@ -108,41 +108,6 @@ export interface ConversionResult {
   originalBlockName?: string;
   /** Original block model api_key (for renaming after deletion) */
   originalBlockApiKey?: string;
-  /** Cleanup context for when user clicks "Delete Original Block" */
-  cleanupContext?: CleanupContext;
-}
-
-/**
- * Context needed to clean up original block data when user clicks "Delete Original Block"
- */
-export interface CleanupContext {
-  /** The block ID being converted */
-  blockId: string;
-  /** Mapping from old block instance IDs to new record IDs */
-  mapping: BlockMigrationMapping;
-  /** Fields that were converted and need cleanup */
-  convertedFields: ConvertedFieldInfo[];
-  /** Nested paths for cleaning up nested block references */
-  nestedPaths: NestedBlockPath[];
-  /** Available locales in the project */
-  availableLocales: string[];
-}
-
-/**
- * Info about a converted field for cleanup purposes
- */
-export interface ConvertedFieldInfo {
-  id: string;
-  apiKey: string;
-  parentModelId: string;
-  parentModelApiKey: string;
-  parentIsBlock: boolean;
-  localized: boolean;
-  fieldType: 'rich_text' | 'structured_text' | 'single_block';
-  /** IDs of block types that remain in this field after removing the converted block */
-  remainingBlockIds: string[];
-  /** API key of the new links field that was created */
-  newLinksFieldApiKey: string;
 }
 
 export interface BlockMigrationMapping {

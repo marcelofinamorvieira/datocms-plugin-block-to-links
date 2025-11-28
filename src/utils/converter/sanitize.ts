@@ -8,6 +8,8 @@
  * @module utils/converter/sanitize
  */
 
+import { getBlockTypeId } from '../blocks';
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -111,8 +113,8 @@ function isBlockObject(obj: Record<string, unknown>): boolean {
 function sanitizeBlockObject(obj: Record<string, unknown>): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
   
-  // Extract the item_type ID from various possible formats
-  const itemTypeId = extractItemTypeId(obj);
+  // Extract the item_type ID using the shared utility
+  const itemTypeId = getBlockTypeId(obj);
 
   // Set up the proper structure for CMA
   if (itemTypeId) {
@@ -146,45 +148,6 @@ function sanitizeBlockObject(obj: Record<string, unknown>): Record<string, unkno
   }
 
   return sanitized;
-}
-
-/**
- * Extracts the item_type ID from a block object.
- * Handles multiple formats that the CMA client may return.
- * 
- * @param obj - Block object to extract from
- * @returns The item_type ID, or undefined if not found
- */
-function extractItemTypeId(obj: Record<string, unknown>): string | undefined {
-  // Check __itemTypeId first (convenience property)
-  if (typeof obj.__itemTypeId === 'string') {
-    return obj.__itemTypeId;
-  }
-  
-  // Check relationships.item_type.data.id
-  if (obj.relationships) {
-    const rel = obj.relationships as Record<string, unknown>;
-    const itemTypeRel = rel.item_type as Record<string, unknown> | undefined;
-    if (itemTypeRel?.data) {
-      const data = itemTypeRel.data as Record<string, unknown>;
-      if (typeof data.id === 'string') {
-        return data.id;
-      }
-    }
-  }
-  
-  // Check item_type directly (string or object with id)
-  if (typeof obj.item_type === 'string') {
-    return obj.item_type;
-  }
-  if (obj.item_type && typeof obj.item_type === 'object') {
-    const itemType = obj.item_type as Record<string, unknown>;
-    if (typeof itemType.id === 'string') {
-      return itemType.id;
-    }
-  }
-
-  return undefined;
 }
 
 // =============================================================================

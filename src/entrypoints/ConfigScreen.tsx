@@ -23,7 +23,7 @@ import { createClient } from '../utils/client';
 import { analyzeBlock } from '../utils/analyzer';
 import { convertBlockToModel } from '../utils/converter';
 import { Icons } from '../components/Icons';
-import type { BlockAnalysis, ConversionProgress, CleanupContext } from '../types';
+import type { BlockAnalysis, ConversionProgress } from '../types';
 import s from './styles.module.css';
 
 type Props = {
@@ -54,7 +54,6 @@ type ConversionState =
       convertedFields: number;
       originalBlockName?: string;
       originalBlockApiKey?: string;
-      cleanupContext?: CleanupContext;
     } }
   | { status: 'error'; message: string };
 
@@ -198,7 +197,6 @@ export default function ConfigScreen({ ctx }: Props) {
             convertedFields: result.convertedFieldsCount,
             originalBlockName: result.originalBlockName,
             originalBlockApiKey: result.originalBlockApiKey,
-            cleanupContext: result.cleanupContext,
           },
         });
 
