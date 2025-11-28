@@ -13,7 +13,6 @@ import type {
   ModularContentFieldInfo,
   NestedBlockPath,
 } from '../../types';
-import { delay } from '../client';
 import { traverseAndRemoveBlocks } from './traverse';
 import {
   migrateFieldData,
@@ -497,7 +496,6 @@ async function handleFullModularContentReplacement(
     );
     
     await client.fields.destroy(mcField.id);
-    await delay(500);
     
     await client.fields.update(existingLinksField.id, {
       position: originalPosition,
@@ -558,7 +556,6 @@ async function handleFullModularContentReplacement(
 
     // Delete old field
     await client.fields.destroy(mcField.id);
-    await delay(500);
 
     // Rename temp field to original
     const fieldsAfterDelete = await client.fields.list(mcField.parentModelId);
@@ -736,7 +733,6 @@ async function cleanupTempFields(
     if (field.api_key === `${originalApiKey}_temp_links`) {
       try {
         await client.fields.destroy(field.id);
-        await delay(300);
       } catch (e) {
         console.warn(`Could not clean up existing field ${field.api_key}:`, e);
       }

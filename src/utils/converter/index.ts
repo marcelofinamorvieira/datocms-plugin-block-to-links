@@ -22,7 +22,6 @@ import type {
   NestedBlockPath,
 } from '../../types';
 import { analyzeBlock, buildNestedPathsToRootModels, getGroupedBlockInstances } from '../analyzer';
-import { delay } from '../client';
 import {
   migrateBlocksToRecordsNested,
   migrateGroupedBlocksToRecords,
@@ -436,11 +435,6 @@ async function publishRecords(
       stepDescription: `Publishing records... (${Math.min(i + batchSize, recordIds.length)}/${recordIds.length})`,
       percentage: Math.min(progressPercent, 99),
     });
-
-    // Rate limiting delay
-    if (i + batchSize < recordIds.length) {
-      await delay(100);
-    }
   }
 }
 

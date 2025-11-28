@@ -14,7 +14,6 @@ import type {
   GroupedBlockInstance,
   StructuredTextValue,
 } from '../../types';
-import { processBatch } from '../client';
 import { getBlockTypeId, getBlockId, extractBlocksFromFieldValue } from '../blocks';
 import { wrapFieldsInLocalizedHash, mergeLocaleData, completeLocalizedUpdate } from '../locale';
 import {
@@ -91,32 +90,27 @@ export async function migrateBlocksToRecordsNested(
 
   const blocksArray = Array.from(uniqueBlocks.values());
 
-  await processBatch(
-    blocksArray,
-    10,
-    async (instance) => {
-      // Sanitize the block data
-      const sanitizedData = sanitizeFieldValuesForCreation(instance.blockData);
-      
-      // Wrap in localized hash if needed
-      let recordData: Record<string, unknown>;
-      if (forceLocalizedFields && availableLocales.length > 0) {
-        recordData = wrapFieldsInLocalizedHash(sanitizedData, availableLocales);
-      } else {
-        recordData = sanitizedData;
-      }
+  for (const instance of blocksArray) {
+    // Sanitize the block data
+    const sanitizedData = sanitizeFieldValuesForCreation(instance.blockData);
+    
+    // Wrap in localized hash if needed
+    let recordData: Record<string, unknown>;
+    if (forceLocalizedFields && availableLocales.length > 0) {
+      recordData = wrapFieldsInLocalizedHash(sanitizedData, availableLocales);
+    } else {
+      recordData = sanitizedData;
+    }
 
-      const newRecord = await client.items.create({
-        item_type: { type: 'item_type', id: newModelId },
-        ...recordData,
-      });
+    const newRecord = await client.items.create({
+      item_type: { type: 'item_type', id: newModelId },
+      ...recordData,
+    });
 
-      mapping[instance.blockId] = newRecord.id;
-      migratedCount++;
-      onMigrated(migratedCount);
-    },
-    200
-  );
+    mapping[instance.blockId] = newRecord.id;
+    migratedCount++;
+    onMigrated(migratedCount);
+  }
 
   return mapping;
 }
@@ -149,46 +143,41 @@ export async function migrateGroupedBlocksToRecords(
     return !group.allBlockIds.every(id => existingMapping[id]);
   });
 
-  await processBatch(
-    groupsToMigrate,
-    10,
-    async (group) => {
-      // Get all field keys from all locales
-      const allFieldKeys = new Set<string>();
-      for (const localeKey of Object.keys(group.localeData)) {
-        for (const fieldKey of Object.keys(group.localeData[localeKey])) {
-          allFieldKeys.add(fieldKey);
-        }
+  for (const group of groupsToMigrate) {
+    // Get all field keys from all locales
+    const allFieldKeys = new Set<string>();
+    for (const localeKey of Object.keys(group.localeData)) {
+      for (const fieldKey of Object.keys(group.localeData[localeKey])) {
+        allFieldKeys.add(fieldKey);
       }
+    }
 
-      // Build localized field values from the group's locale data
-      const localizedFieldData = mergeLocaleData(
-        group.localeData,
-        allFieldKeys,
-        availableLocales
-      );
+    // Build localized field values from the group's locale data
+    const localizedFieldData = mergeLocaleData(
+      group.localeData,
+      allFieldKeys,
+      availableLocales
+    );
 
-      // Sanitize the localized field data
-      const sanitizedData = sanitizeLocalizedFieldValuesForCreation(localizedFieldData);
+    // Sanitize the localized field data
+    const sanitizedData = sanitizeLocalizedFieldValuesForCreation(localizedFieldData);
 
-      const newRecord = await client.items.create({
-        item_type: { type: 'item_type', id: newModelId },
-        ...sanitizedData,
-      });
+    const newRecord = await client.items.create({
+      item_type: { type: 'item_type', id: newModelId },
+      ...sanitizedData,
+    });
 
-      // Map ALL original block IDs from all locales to this single new record
-      for (const blockInstanceId of group.allBlockIds) {
-        mapping[blockInstanceId] = newRecord.id;
-      }
-      
-      // Also map the group key for easy reference
-      mapping[group.groupKey] = newRecord.id;
-      
-      migratedCount++;
-      onMigrated(migratedCount);
-    },
-    200
-  );
+    // Map ALL original block IDs from all locales to this single new record
+    for (const blockInstanceId of group.allBlockIds) {
+      mapping[blockInstanceId] = newRecord.id;
+    }
+    
+    // Also map the group key for easy reference
+    mapping[group.groupKey] = newRecord.id;
+    
+    migratedCount++;
+    onMigrated(migratedCount);
+  }
 
   return mapping;
 }
