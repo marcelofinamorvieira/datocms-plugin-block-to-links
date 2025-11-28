@@ -5,6 +5,12 @@
  * which are used in DatoCMS Structured Text fields.
  */
 
+import {
+  hasChildren,
+  isBlock,
+  isInlineBlock,
+  collectNodes,
+} from 'datocms-structured-text-utils';
 import type {
   Node,
   Block,
@@ -48,26 +54,6 @@ export function isStructuredTextValue(value: unknown): value is StructuredTextVa
   return false;
 }
 
-/**
- * Check if a node has children
- */
-export function isNodeWithChildren(node: Node): node is WithChildrenNode {
-  return 'children' in node && Array.isArray((node as WithChildrenNode).children);
-}
-
-/**
- * Check if a node is a block reference node
- */
-export function isBlockNode(node: Node): node is Block {
-  return node.type === 'block';
-}
-
-/**
- * Check if a node is an inline block reference node
- */
-export function isInlineBlockNode(node: Node): node is InlineBlock {
-  return node.type === 'inlineBlock';
-}
 
 /**
  * Get the block ID from a block/inlineBlock node.
@@ -166,30 +152,6 @@ export function findBlockRecordById(
 // =============================================================================
 
 /**
- * Traverses a DAST document tree and calls the callback for each node.
- * 
- * @param node - The current node to process
- * @param callback - Function called for each node. Return false to stop traversal of children.
- * @param path - Current path in the tree (for debugging/replacement)
- */
-export function traverseDast(
-  node: Node,
-  callback: (node: Node, path: (string | number)[]) => boolean | void,
-  path: (string | number)[] = []
-): void {
-  // Call callback for current node
-  const shouldContinue = callback(node, path);
-  if (shouldContinue === false) return;
-
-  // Recursively traverse children
-  if (isNodeWithChildren(node)) {
-    node.children.forEach((child, index) => {
-      traverseDast(child as Node, callback, [...path, 'children', index]);
-    });
-  }
-}
-
-/**
  * Finds all block and inlineBlock nodes in a DAST document.
  * Returns information about each node including its type and the block type ID.
  * Handles both formats:
@@ -202,33 +164,34 @@ export function traverseDast(
 export function findBlockNodesInDast(
   structuredTextValue: StructuredTextValue
 ): DastBlockNodeInfo[] {
-  const results: DastBlockNodeInfo[] = [];
   const blocks = structuredTextValue.blocks || [];
 
-  traverseDast(structuredTextValue.document, (node, path) => {
-    if (isBlockNode(node) || isInlineBlockNode(node)) {
-      // Get block ID (handles both string ID and inlined object formats)
-      const itemId = getBlockNodeItemId(node);
-      
-      // Try to get block type ID - first from inlined data, then from blocks array
-      let blockTypeId = getInlinedBlockTypeId(node);
-      
-      if (!blockTypeId && typeof itemId === 'string') {
-        // Fallback: look up in blocks array
-        const blockRecord = findBlockRecordById(blocks, itemId);
-        blockTypeId = blockRecord ? getBlockRecordTypeId(blockRecord) : undefined;
-      }
+  // Use collectNodes from datocms-structured-text-utils to find all block/inlineBlock nodes
+  const blockNodes = collectNodes(
+    structuredTextValue.document,
+    (node): node is Block | InlineBlock => isBlock(node) || isInlineBlock(node)
+  );
 
-      results.push({
-        nodeType: node.type as 'block' | 'inlineBlock',
-        itemId: itemId || (node.item as string), // Fallback to raw value if parsing fails
-        blockTypeId,
-        path,
-      });
+  return blockNodes.map(({ node, path }) => {
+    // Get block ID (handles both string ID and inlined object formats)
+    const itemId = getBlockNodeItemId(node);
+
+    // Try to get block type ID - first from inlined data, then from blocks array
+    let blockTypeId = getInlinedBlockTypeId(node);
+
+    if (!blockTypeId && typeof itemId === 'string') {
+      // Fallback: look up in blocks array
+      const blockRecord = findBlockRecordById(blocks, itemId);
+      blockTypeId = blockRecord ? getBlockRecordTypeId(blockRecord) : undefined;
     }
-  });
 
-  return results;
+    return {
+      nodeType: node.type as 'block' | 'inlineBlock',
+      itemId: itemId || (node.item as string), // Fallback to raw value if parsing fails
+      blockTypeId,
+      path: [...path], // Spread to create mutable array from readonly TreePath
+    };
+  });
 }
 
 /**
@@ -364,7 +327,7 @@ function replaceBlockNodesInTree<T extends Node>(
   isRootLevel: boolean = false
 ): T {
   // Check if this is a block or inlineBlock node to replace
-  if (isBlockNode(node) || isInlineBlockNode(node)) {
+  if (isBlock(node) || isInlineBlock(node)) {
     // Get block ID (handles both string ID and inlined object formats)
     const itemId = getBlockNodeItemId(node);
     
@@ -418,7 +381,7 @@ function replaceBlockNodesInTree<T extends Node>(
   }
 
   // If node has children, recursively process them
-  if (isNodeWithChildren(node)) {
+  if (hasChildren(node)) {
     const clonedNode = { ...node } as WithChildrenNode;
     
     // Check if this is the root node - its children are at root level
@@ -594,7 +557,7 @@ function addInlineItemsAlongsideBlocksInTree<T extends Node>(
   newLinks: Array<{ id: string }>
 ): T {
   // If node has children, process them and potentially insert new nodes
-  if (isNodeWithChildren(node)) {
+  if (hasChildren(node)) {
     const clonedNode = { ...node } as WithChildrenNode;
     const childrenAreRootLevel = (node as Node).type === 'root';
     
@@ -623,7 +586,7 @@ function addInlineItemsAlongsideBlocksInTree<T extends Node>(
       
       // Check if this child is a block/inlineBlock of the target type
       // If so, add an inlineItem node after it
-      if (isBlockNode(childNode) || isInlineBlockNode(childNode)) {
+      if (isBlock(childNode) || isInlineBlock(childNode)) {
         const itemId = getBlockNodeItemId(childNode);
         let blockTypeId = getInlinedBlockTypeId(childNode);
         
