@@ -11,10 +11,7 @@ A powerful plugin for DatoCMS that automates the conversion of Modular Blocks in
 - **Structured Text Compatible**: Seamlessly migrates blocks within Structured Text fields, converting them to appropriate record links and preserving rich content structure.
 - **Flexible Options**: Choose to fully replace the old block or keep it alongside the new model for safety.
 
-
-[![Watch the demo](docs/cover.png)](https://github.com/marcelofinamorvieira/datocms-plugin-block-to-links/raw/master/docs/StructuredTextDemo.mp4)
-
-> 📹 Click the image above to download and watch the demo video
+![Demo](docs/StructuredTextDemo.gif)
 
 ## How to Use
 
