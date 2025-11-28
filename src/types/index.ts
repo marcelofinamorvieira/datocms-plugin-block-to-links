@@ -149,16 +149,6 @@ export interface BlockMigrationMapping {
   [blockInstanceId: string]: string;
 }
 
-export interface RecordBlockData {
-  recordId: string;
-  fieldApiKey: string;
-  blocks: Array<{
-    id: string;
-    itemType: string;
-    data: Record<string, unknown>;
-  }>;
-}
-
 export type ProgressCallback = (progress: ConversionProgress) => void;
 
 export type CMAClient = Client;

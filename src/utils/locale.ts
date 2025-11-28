@@ -15,14 +15,6 @@
 /** A localized field value - object with locale codes as keys */
 export type LocalizedValue<T = unknown> = Record<string, T>;
 
-/** Options for locale processing functions */
-export interface LocaleProcessingOptions {
-  /** List of all available locales in the project */
-  availableLocales: string[];
-  /** Fallback locale to use when a locale has no value (defaults to 'en' or first available) */
-  fallbackLocale?: string;
-}
-
 // =============================================================================
 // Locale Value Wrapping
 // =============================================================================
@@ -85,43 +77,6 @@ export function wrapFieldsInLocalizedHash(
 // =============================================================================
 
 /**
- * Ensures all available locales are present in a localized value.
- * Missing locales are filled with null or a fallback value.
- * 
- * This is critical when updating records to avoid DatoCMS interpreting
- * missing locales as "removed" locales.
- * 
- * @param localizedValue - The localized value to complete
- * @param availableLocales - List of all locales that should be present
- * @param fallbackValue - Value to use for missing locales (default: null)
- * @returns Localized value with all locales present
- * 
- * @example
- * const complete = ensureAllLocalesPresent(
- *   { en: 'Hello' },
- *   ['en', 'es', 'fr']
- * );
- * // Result: { en: 'Hello', es: null, fr: null }
- */
-export function ensureAllLocalesPresent<T>(
-  localizedValue: LocalizedValue<T>,
-  availableLocales: string[],
-  fallbackValue: T | null = null
-): LocalizedValue<T | null> {
-  const result: LocalizedValue<T | null> = {};
-  
-  for (const locale of availableLocales) {
-    if (locale in localizedValue) {
-      result[locale] = localizedValue[locale];
-    } else {
-      result[locale] = fallbackValue;
-    }
-  }
-  
-  return result;
-}
-
-/**
  * Ensures all locales are present in an update object for a localized field.
  * Uses original values for locales that weren't updated.
  * 
@@ -151,37 +106,8 @@ export function completeLocalizedUpdate<T>(
 }
 
 // =============================================================================
-// Locale Processing
+// Locale Data Merging
 // =============================================================================
-
-/**
- * Processes a potentially localized field value.
- * Determines if the value is localized and processes accordingly.
- * 
- * @param fieldValue - The field value (may be localized or not)
- * @param isLocalized - Whether the field is expected to be localized
- * @param processor - Function to process individual values
- * @returns Processed value (maintains localization structure)
- */
-export function processLocalizedValue<T, R>(
-  fieldValue: T | LocalizedValue<T>,
-  isLocalized: boolean,
-  processor: (value: T, locale: string | null) => R
-): R | LocalizedValue<R> {
-  if (isLocalized && typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
-    // Localized field - process each locale
-    const localizedResult: LocalizedValue<R> = {};
-    
-    for (const [locale, localeValue] of Object.entries(fieldValue as LocalizedValue<T>)) {
-      localizedResult[locale] = processor(localeValue, locale);
-    }
-    
-    return localizedResult;
-  }
-  
-  // Non-localized field
-  return processor(fieldValue as T, null);
-}
 
 /**
  * Merges locale data from multiple sources into a single localized value.
@@ -239,31 +165,3 @@ export function mergeLocaleData(
   
   return result;
 }
-
-/**
- * Determines if a field value looks like a localized value.
- * A localized value is an object where keys are locale codes.
- * 
- * @param value - The value to check
- * @param isExpectedLocalized - Whether the field is expected to be localized
- * @returns True if the value appears to be localized
- */
-export function isLocalizedValue(
-  value: unknown,
-  isExpectedLocalized: boolean = true
-): value is LocalizedValue {
-  if (!isExpectedLocalized) return false;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  
-  // Check if it looks like a locale hash (object with string keys, not a special object)
-  const obj = value as Record<string, unknown>;
-  
-  // Exclude objects that look like blocks or structured text
-  if ('type' in obj || 'document' in obj || 'blocks' in obj || 
-      'relationships' in obj || '__itemTypeId' in obj || 'item_type' in obj) {
-    return false;
-  }
-  
-  return true;
-}
-

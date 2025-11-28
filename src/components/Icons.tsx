@@ -192,6 +192,3 @@ export const Icons = {
   Code: CodeIcon,
   Info: InfoIcon,
 } as const;
-
-export default Icons;
-

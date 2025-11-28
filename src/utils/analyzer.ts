@@ -367,13 +367,6 @@ export async function buildNestedPathsToRootModels(
 }
 
 /**
- * Helper function to check if a block is in a localized context
- */
-export function isBlockInLocalizedContext(nestedPath: NestedBlockPath): boolean {
-  return nestedPath.isInLocalizedContext;
-}
-
-/**
  * Groups nested paths by their root model ID.
  * This enables efficient record scanning by processing all paths
  * for a given root model in a single pass.
@@ -665,59 +658,6 @@ export function findBlocksAtPath(
 // =============================================================================
 
 /**
- * Gets all block instances of a specific type from all records, following nested paths.
- * 
- * @param client - DatoCMS CMA client
- * @param nestedPath - Path from root model to the block field
- * @param targetBlockId - ID of the block type to find
- * @returns Array of block instances with their data and location info
- */
-export async function getAllBlockInstancesNested(
-  client: CMAClient,
-  nestedPath: NestedBlockPath,
-  targetBlockId: string
-): Promise<
-  Array<{
-    rootRecordId: string;
-    locale: string | null;
-    blockData: Record<string, unknown>;
-    blockId: string;
-    pathIndices: number[];
-  }>
-> {
-  const instances: Array<{
-    rootRecordId: string;
-    locale: string | null;
-    blockData: Record<string, unknown>;
-    blockId: string;
-    pathIndices: number[];
-  }> = [];
-
-  for await (const record of client.items.listPagedIterator({
-    filter: { type: nestedPath.rootModelId },
-    nested: true,
-    version: 'current', // Fetch draft version to get latest changes
-  })) {
-    const blocks = findBlocksAtPath(record, nestedPath.path, targetBlockId);
-
-    for (const { block, pathIndices, locale } of blocks) {
-      const blockData = getBlockAttributes(block);
-      const id = getBlockId(block);
-
-      instances.push({
-        rootRecordId: record.id,
-        locale,
-        blockData,
-        blockId: id || `${record.id}_${pathIndices.join('_')}`,
-        pathIndices,
-      });
-    }
-  }
-
-  return instances;
-}
-
-/**
  * Gets block instances grouped by position across locales.
  * This is used for localized contexts where blocks at the same position
  * in different locales should be merged into a single record.
@@ -790,46 +730,4 @@ export async function getGroupedBlockInstances(
   }
 
   return result;
-}
-
-// Keep legacy function for backwards compatibility
-export async function getAllBlockInstances(
-  client: CMAClient,
-  modularContentField: ModularContentFieldInfo,
-  blockId: string
-): Promise<
-  Array<{
-    recordId: string;
-    locale: string | null;
-    blockData: Record<string, unknown>;
-    blockId: string;
-    position: number;
-  }>
-> {
-  // Build path for this field
-  const paths = await buildNestedPathsToRootModels(client, [modularContentField], blockId);
-  
-  const allInstances: Array<{
-    recordId: string;
-    locale: string | null;
-    blockData: Record<string, unknown>;
-    blockId: string;
-    position: number;
-  }> = [];
-
-  for (const path of paths) {
-    const nestedInstances = await getAllBlockInstancesNested(client, path, blockId);
-    
-    for (const instance of nestedInstances) {
-      allInstances.push({
-        recordId: instance.rootRecordId,
-        locale: instance.locale,
-        blockData: instance.blockData,
-        blockId: instance.blockId,
-        position: instance.pathIndices[instance.pathIndices.length - 1] || 0,
-      });
-    }
-  }
-
-  return allInstances;
 }

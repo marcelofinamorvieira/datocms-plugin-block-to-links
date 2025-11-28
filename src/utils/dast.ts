@@ -7,10 +7,8 @@
 
 import type {
   Node,
-  Root,
   Block,
   InlineBlock,
-  InlineItem,
   WithChildrenNode,
 } from 'datocms-structured-text-utils';
 import type {
@@ -121,13 +119,6 @@ export function getInlinedBlockTypeId(node: Block | InlineBlock): string | undef
     }
   }
   return undefined;
-}
-
-/**
- * Check if a node is an inline item (record link) node
- */
-export function isInlineItemNode(node: Node): node is InlineItem {
-  return node.type === 'inlineItem';
 }
 
 // =============================================================================
@@ -253,51 +244,6 @@ export function findBlockNodesOfType(
 ): DastBlockNodeInfo[] {
   return findBlockNodesInDast(structuredTextValue).filter(
     info => info.blockTypeId === targetBlockTypeId
-  );
-}
-
-/**
- * Checks if a structured text value contains any blocks of the specified type.
- * 
- * @param structuredTextValue - The complete structured text field value
- * @param targetBlockTypeId - The block type ID to check for
- * @returns True if the document contains at least one block of the specified type
- */
-export function containsBlockOfType(
-  structuredTextValue: StructuredTextValue,
-  targetBlockTypeId: string
-): boolean {
-  const blocks = structuredTextValue.blocks || [];
-  
-  // First, check if any blocks in the blocks array match the type
-  const hasMatchingBlock = blocks.some(block => getBlockRecordTypeId(block) === targetBlockTypeId);
-  if (!hasMatchingBlock) return false;
-
-  // Then verify the block is actually referenced in the document
-  const blockNodes = findBlockNodesOfType(structuredTextValue, targetBlockTypeId);
-  return blockNodes.length > 0;
-}
-
-/**
- * Gets all block records of a specific type from a structured text value.
- * Only returns blocks that are actually referenced in the document tree.
- * 
- * @param structuredTextValue - The complete structured text field value
- * @param targetBlockTypeId - The block type ID to filter by
- * @returns Array of block records matching the target type
- */
-export function getBlockRecordsOfType(
-  structuredTextValue: StructuredTextValue,
-  targetBlockTypeId: string
-): DastBlockRecord[] {
-  const blocks = structuredTextValue.blocks || [];
-  const blockNodes = findBlockNodesOfType(structuredTextValue, targetBlockTypeId);
-  
-  // Get unique block IDs that are referenced and match the type
-  const referencedBlockIds = new Set(blockNodes.map(node => node.itemId));
-  
-  return blocks.filter(
-    block => referencedBlockIds.has(block.id) && getBlockRecordTypeId(block) === targetBlockTypeId
   );
 }
 
@@ -521,119 +467,6 @@ export function extractLinksFromStructuredText(
   }
 
   return linkIds;
-}
-
-/**
- * Removes block nodes of a specific type from a DAST document.
- * This is used during cleanup when user clicks "Delete Original Block".
- * The block nodes and their corresponding blocks array entries are removed.
- * 
- * @param structuredTextValue - The complete structured text field value
- * @param targetBlockTypeId - The block type ID to remove
- * @returns Transformed structured text value, or null if no changes were made
- */
-export function removeBlockNodesFromDast(
-  structuredTextValue: StructuredTextValue,
-  targetBlockTypeId: string
-): StructuredTextValue | null {
-  // Find all block nodes of the target type
-  const blockNodes = findBlockNodesOfType(structuredTextValue, targetBlockTypeId);
-  
-  if (blockNodes.length === 0) {
-    return null; // No changes needed
-  }
-
-  // Clone the value to avoid mutation
-  const result = JSON.parse(JSON.stringify(structuredTextValue)) as StructuredTextValue;
-  
-  // Track which blocks to remove from the blocks array
-  const blocksToRemove = new Set<string>();
-  
-  // Recursively remove block nodes from the document tree
-  result.document = removeBlockNodesFromTree(
-    result.document,
-    targetBlockTypeId,
-    result.blocks || [],
-    blocksToRemove
-  ) as Root;
-
-  // Remove converted blocks from the blocks array
-  if (result.blocks) {
-    result.blocks = result.blocks.filter(block => !blocksToRemove.has(block.id));
-    if (result.blocks.length === 0) {
-      delete result.blocks;
-    }
-  }
-
-  // Normalize blocks array format if it exists
-  if (result.blocks) {
-    result.blocks = result.blocks.map(block => ({
-      id: block.id,
-      type: block.type,
-      attributes: block.attributes,
-      relationships: block.relationships,
-    })) as typeof result.blocks;
-  }
-
-  // Normalize links array if it exists
-  if (result.links) {
-    result.links = result.links.map(l => ({ id: l.id })) as typeof result.links;
-  }
-
-  return result;
-}
-
-/**
- * Recursively removes block/inlineBlock nodes of a specific type from a tree.
- * Used for cleanup - removes the original block nodes (inlineItem nodes are already there from conversion).
- */
-function removeBlockNodesFromTree<T extends Node>(
-  node: T,
-  targetBlockTypeId: string,
-  blocks: DastBlockRecord[],
-  blocksToRemove: Set<string>
-): T | null {
-  // Check if this is a block or inlineBlock node to remove
-  if (isBlockNode(node) || isInlineBlockNode(node)) {
-    // Get block ID (handles both string ID and inlined object formats)
-    const itemId = getBlockNodeItemId(node);
-    
-    // Try to get block type ID - first from inlined data, then from blocks array
-    let blockTypeId = getInlinedBlockTypeId(node);
-    
-    if (!blockTypeId && typeof itemId === 'string') {
-      // Fallback: look up in blocks array
-      const blockRecord = findBlockRecordById(blocks, itemId);
-      blockTypeId = blockRecord ? getBlockRecordTypeId(blockRecord) : undefined;
-    }
-
-    if (blockTypeId === targetBlockTypeId && itemId) {
-      // Mark block for removal
-      blocksToRemove.add(itemId);
-      // Return null to indicate this node should be removed
-      return null;
-    }
-  }
-
-  // If node has children, recursively process them
-  if (isNodeWithChildren(node)) {
-    const clonedNode = { ...node } as WithChildrenNode;
-    
-    const newChildren = clonedNode.children
-      .map(child => removeBlockNodesFromTree(
-        child as Node,
-        targetBlockTypeId,
-        blocks,
-        blocksToRemove
-      ))
-      .filter((child): child is Node => child !== null);
-    
-    clonedNode.children = newChildren as typeof clonedNode.children;
-    return clonedNode as T;
-  }
-
-  // Return node unchanged
-  return node;
 }
 
 // =============================================================================
