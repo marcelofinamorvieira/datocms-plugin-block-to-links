@@ -1,5 +1,55 @@
 import type { Client } from '@datocms/cma-client-browser';
 
+// =============================================================================
+// Import official DAST types from datocms-structured-text-utils
+// =============================================================================
+import type {
+  Root,
+  Paragraph,
+  Heading,
+  List,
+  ListItem,
+  Code,
+  Blockquote,
+  Block,
+  ThematicBreak,
+  Span,
+  Link,
+  ItemLink,
+  InlineItem,
+  InlineBlock,
+  Node,
+  InlineNode,
+  WithChildrenNode,
+  Mark,
+} from 'datocms-structured-text-utils';
+
+// =============================================================================
+// Re-export official types with Dast prefix for backwards compatibility
+// =============================================================================
+export type DastRootNode = Root;
+export type DastParagraphNode = Paragraph;
+export type DastHeadingNode = Heading;
+export type DastListNode = List;
+export type DastListItemNode = ListItem;
+export type DastCodeNode = Code;
+export type DastBlockquoteNode = Blockquote;
+export type DastBlockNode = Block;
+export type DastThematicBreakNode = ThematicBreak;
+export type DastSpanNode = Span;
+export type DastLinkNode = Link;
+export type DastItemLinkNode = ItemLink;
+export type DastInlineItemNode = InlineItem;
+export type DastInlineBlockNode = InlineBlock;
+export type DastNode = Node;
+export type DastInlineNode = InlineNode;
+export type DastNodeWithChildren = WithChildrenNode;
+export type DastMark = Mark;
+
+// =============================================================================
+// App-specific types
+// =============================================================================
+
 export interface BlockAnalysis {
   block: {
     id: string;
@@ -168,11 +218,12 @@ export type ProgressCallback = (progress: ConversionProgress) => void;
 export type CMAClient = Client;
 
 // =============================================================================
-// DAST (DatoCMS Abstract Syntax Tree) Types
+// CMA-specific DAST types (different from CDA format)
 // =============================================================================
 
 /**
- * The complete structured text field value as stored in DatoCMS.
+ * The complete structured text field value as stored in DatoCMS CMA.
+ * Note: This differs from the CDA format - CMA uses 'document' while CDA uses 'value'.
  * When using `nested: true`, blocks and links are expanded inline.
  */
 export interface StructuredTextValue {
@@ -187,7 +238,8 @@ export interface StructuredTextValue {
 }
 
 /**
- * A block record embedded in structured text (from the blocks array)
+ * A block record embedded in structured text (from the blocks array).
+ * This is the CMA format which includes relationships and attributes.
  */
 export interface DastBlockRecord {
   id: string;
@@ -216,167 +268,6 @@ export interface DastLinkRecord {
   id: string;
   [key: string]: unknown;
 }
-
-// -----------------------------------------------------------------------------
-// DAST Node Types
-// -----------------------------------------------------------------------------
-
-/** Base type for all DAST nodes */
-export interface DastNodeBase {
-  type: string;
-}
-
-/** Root node - the top-level container of the document */
-export interface DastRootNode extends DastNodeBase {
-  type: 'root';
-  children: DastRootChildNode[];
-}
-
-/** Nodes that can be direct children of root */
-export type DastRootChildNode =
-  | DastParagraphNode
-  | DastHeadingNode
-  | DastListNode
-  | DastCodeNode
-  | DastBlockquoteNode
-  | DastBlockNode
-  | DastThematicBreakNode;
-
-/** Paragraph node */
-export interface DastParagraphNode extends DastNodeBase {
-  type: 'paragraph';
-  children: DastInlineNode[];
-}
-
-/** Heading node */
-export interface DastHeadingNode extends DastNodeBase {
-  type: 'heading';
-  level: 1 | 2 | 3 | 4 | 5 | 6;
-  children: DastInlineNode[];
-}
-
-/** List node */
-export interface DastListNode extends DastNodeBase {
-  type: 'list';
-  style: 'bulleted' | 'numbered';
-  children: DastListItemNode[];
-}
-
-/** List item node */
-export interface DastListItemNode extends DastNodeBase {
-  type: 'listItem';
-  children: (DastParagraphNode | DastListNode)[];
-}
-
-/** Code block node */
-export interface DastCodeNode extends DastNodeBase {
-  type: 'code';
-  language?: string;
-  highlight?: number[];
-  code: string;
-}
-
-/** Blockquote node */
-export interface DastBlockquoteNode extends DastNodeBase {
-  type: 'blockquote';
-  attribution?: string;
-  children: DastParagraphNode[];
-}
-
-/** Block node - references an embedded block record (root-level only) */
-export interface DastBlockNode extends DastNodeBase {
-  type: 'block';
-  /** ID of the block record in the blocks array */
-  item: string;
-}
-
-/** Thematic break node */
-export interface DastThematicBreakNode extends DastNodeBase {
-  type: 'thematicBreak';
-}
-
-/** Nodes that can appear inline within text */
-export type DastInlineNode =
-  | DastSpanNode
-  | DastLinkNode
-  | DastItemLinkNode
-  | DastInlineItemNode
-  | DastInlineBlockNode;
-
-/** Span node - text content */
-export interface DastSpanNode extends DastNodeBase {
-  type: 'span';
-  value: string;
-  marks?: DastMark[];
-}
-
-/** Text decoration marks */
-export type DastMark = 
-  | 'strong'
-  | 'emphasis'
-  | 'underline'
-  | 'strikethrough'
-  | 'code'
-  | 'highlight';
-
-/** Link node - hyperlink to external URL */
-export interface DastLinkNode extends DastNodeBase {
-  type: 'link';
-  url: string;
-  meta?: Array<{ id: string; value: string }>;
-  children: DastSpanNode[];
-}
-
-/** Item link node - hyperlink to a DatoCMS record */
-export interface DastItemLinkNode extends DastNodeBase {
-  type: 'itemLink';
-  /** ID of the linked record in the links array */
-  item: string;
-  meta?: Array<{ id: string; value: string }>;
-  children: DastSpanNode[];
-}
-
-/** Inline item node - reference to a DatoCMS record without link text */
-export interface DastInlineItemNode extends DastNodeBase {
-  type: 'inlineItem';
-  /** ID of the linked record in the links array */
-  item: string;
-}
-
-/** Inline block node - embedded block within text flow */
-export interface DastInlineBlockNode extends DastNodeBase {
-  type: 'inlineBlock';
-  /** ID of the block record in the blocks array */
-  item: string;
-}
-
-/** Union of all DAST node types */
-export type DastNode =
-  | DastRootNode
-  | DastParagraphNode
-  | DastHeadingNode
-  | DastListNode
-  | DastListItemNode
-  | DastCodeNode
-  | DastBlockquoteNode
-  | DastBlockNode
-  | DastThematicBreakNode
-  | DastSpanNode
-  | DastLinkNode
-  | DastItemLinkNode
-  | DastInlineItemNode
-  | DastInlineBlockNode;
-
-/** Helper type for nodes that can have children */
-export type DastNodeWithChildren = 
-  | DastRootNode
-  | DastParagraphNode
-  | DastHeadingNode
-  | DastListNode
-  | DastListItemNode
-  | DastBlockquoteNode
-  | DastLinkNode
-  | DastItemLinkNode;
 
 /**
  * Result of finding block nodes in a DAST document
