@@ -11,6 +11,9 @@ A powerful plugin for DatoCMS that automates the conversion of Modular Blocks in
 - **Structured Text Compatible**: Seamlessly migrates blocks within Structured Text fields, converting them to appropriate record links and preserving rich content structure.
 - **Flexible Options**: Choose to fully replace the old block or keep it alongside the new model for safety.
 
+
+<video src="docs/StructuredTextDemo.mp4" controls="controls" muted="muted" style="max-width: 100%"></video>
+
 ## How to Use
 
 1. **Install the Plugin**: Add the plugin to your DatoCMS project via the Plugins area.
@@ -36,6 +39,13 @@ When you run a conversion, the plugin performs the following actions:
     - **Modular Content Fields**: Replaces the "Block" usage with a link to the newly created Record.
     - **Structured Text**: Transforms block nodes into inline item links.
 4.  **Cleanup (Optional)**: If "Fully replace" is selected, it removes the old Block definition and cleans up the old data fields.
+
+## ⚠️ Important: Frontend Updates Required
+
+After converting a Block to a Model, you will need to update your GraphQL queries in your frontend application. The syntax for fetching linked records differs from fetching inline blocks:
+
+- **Modular Content Fields**: Instead of querying for the block type directly (e.g., `... on YourBlockRecord`), you will now query the new link field which references the new model.
+- **Structured Text**: Blocks within Structured Text are converted to **Inline Item** links. You will need to update your queries to fetch `links` instead of `blocks` and handle the `inline_item` node type in your renderer (e.g., `datocms-structured-text`).
 
 ## Safety & Best Practices
 
