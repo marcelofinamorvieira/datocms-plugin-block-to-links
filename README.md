@@ -12,7 +12,9 @@ A powerful plugin for DatoCMS that automates the conversion of Modular Blocks in
 - **Flexible Options**: Choose to fully replace the old block or keep it alongside the new model for safety.
 
 
-<video src="docs/StructuredTextDemo.mp4" controls="controls" muted="muted" style="max-width: 100%"></video>
+[![Watch the demo](docs/cover.png)](https://github.com/marcelofinamorvieira/datocms-plugin-block-to-links/raw/master/docs/StructuredTextDemo.mp4)
+
+> 📹 Click the image above to download and watch the demo video
 
 ## How to Use
 
