@@ -1,50 +1,5 @@
 import type { Client } from '@datocms/cma-client-browser';
-
-// =============================================================================
-// Import official DAST types from datocms-structured-text-utils
-// =============================================================================
-import type {
-  Root,
-  Paragraph,
-  Heading,
-  List,
-  ListItem,
-  Code,
-  Blockquote,
-  Block,
-  ThematicBreak,
-  Span,
-  Link,
-  ItemLink,
-  InlineItem,
-  InlineBlock,
-  Node,
-  InlineNode,
-  WithChildrenNode,
-  Mark,
-} from 'datocms-structured-text-utils';
-
-// =============================================================================
-// Re-export official types with Dast prefix for backwards compatibility
-// =============================================================================
-export type DastRootNode = Root;
-export type DastParagraphNode = Paragraph;
-export type DastHeadingNode = Heading;
-export type DastListNode = List;
-export type DastListItemNode = ListItem;
-export type DastCodeNode = Code;
-export type DastBlockquoteNode = Blockquote;
-export type DastBlockNode = Block;
-export type DastThematicBreakNode = ThematicBreak;
-export type DastSpanNode = Span;
-export type DastLinkNode = Link;
-export type DastItemLinkNode = ItemLink;
-export type DastInlineItemNode = InlineItem;
-export type DastInlineBlockNode = InlineBlock;
-export type DastNode = Node;
-export type DastInlineNode = InlineNode;
-export type DastNodeWithChildren = WithChildrenNode;
-export type DastMark = Mark;
+import type { Root } from 'datocms-structured-text-utils';
 
 // =============================================================================
 // App-specific types
@@ -88,12 +43,12 @@ export interface ModularContentFieldInfo {
   parentModelId: string;
   parentModelName: string;
   parentModelApiKey: string;
-  parentIsBlock: boolean; // NEW: indicates if parent is a block
+  parentIsBlock: boolean;
   localized: boolean;
   allowedBlockIds: string[];
   position?: number;
   hint?: string;
-  fieldType: 'rich_text' | 'structured_text' | 'single_block'; // Field type for proper handling
+  fieldType: 'rich_text' | 'structured_text' | 'single_block';
 }
 
 /**
@@ -101,24 +56,16 @@ export interface ModularContentFieldInfo {
  * Each step in the path represents navigating into a modular content field.
  */
 export interface NestedBlockPath {
-  // The root model (not a block) that contains everything
   rootModelId: string;
   rootModelName: string;
   rootModelApiKey: string;
-  
-  // The path of field API keys to navigate from root to the target field
-  // Each entry is: { fieldApiKey, expectedBlockTypeId, localized, fieldType }
-  // The last entry is the field that directly contains the target block
   path: Array<{
     fieldApiKey: string;
-    expectedBlockTypeId: string; // The block type we expect to find at this level
+    expectedBlockTypeId: string;
     localized: boolean;
     fieldType: 'rich_text' | 'structured_text' | 'single_block';
   }>;
-  
-  // The original modular content field info
   fieldInfo: ModularContentFieldInfo;
-  
   /** True if ANY step in the path is localized (meaning block data varies by locale) */
   isInLocalizedContext: boolean;
 }
@@ -199,7 +146,6 @@ export interface ConvertedFieldInfo {
 }
 
 export interface BlockMigrationMapping {
-  // Maps original block instance ID to new record ID
   [blockInstanceId: string]: string;
 }
 
@@ -230,7 +176,7 @@ export interface StructuredTextValue {
   /** The schema identifier, always "dast" for DatoCMS */
   schema: 'dast';
   /** The DAST document tree */
-  document: DastRootNode;
+  document: Root;
   /** Array of block instances embedded in this structured text */
   blocks?: DastBlockRecord[];
   /** Array of linked records referenced in this structured text */

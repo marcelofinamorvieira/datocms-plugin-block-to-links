@@ -6,13 +6,15 @@
  */
 
 import type {
+  Node,
+  Root,
+  Block,
+  InlineBlock,
+  InlineItem,
+  WithChildrenNode,
+} from 'datocms-structured-text-utils';
+import type {
   StructuredTextValue,
-  DastNode,
-  DastRootNode,
-  DastBlockNode,
-  DastInlineBlockNode,
-  DastInlineItemNode,
-  DastNodeWithChildren,
   DastBlockNodeInfo,
   DastBlockRecord,
   BlockMigrationMapping,
@@ -51,21 +53,21 @@ export function isStructuredTextValue(value: unknown): value is StructuredTextVa
 /**
  * Check if a node has children
  */
-export function isNodeWithChildren(node: DastNode): node is DastNodeWithChildren {
-  return 'children' in node && Array.isArray((node as DastNodeWithChildren).children);
+export function isNodeWithChildren(node: Node): node is WithChildrenNode {
+  return 'children' in node && Array.isArray((node as WithChildrenNode).children);
 }
 
 /**
  * Check if a node is a block reference node
  */
-export function isBlockNode(node: DastNode): node is DastBlockNode {
+export function isBlockNode(node: Node): node is Block {
   return node.type === 'block';
 }
 
 /**
  * Check if a node is an inline block reference node
  */
-export function isInlineBlockNode(node: DastNode): node is DastInlineBlockNode {
+export function isInlineBlockNode(node: Node): node is InlineBlock {
   return node.type === 'inlineBlock';
 }
 
@@ -75,7 +77,7 @@ export function isInlineBlockNode(node: DastNode): node is DastInlineBlockNode {
  * - String ID: when blocks array is populated separately
  * - Object with 'id' property: when using nested: true (block data is inlined)
  */
-export function getBlockNodeItemId(node: DastBlockNode | DastInlineBlockNode): string | undefined {
+export function getBlockNodeItemId(node: Block | InlineBlock): string | undefined {
   const item = node.item;
   if (typeof item === 'string') {
     return item;
@@ -90,7 +92,7 @@ export function getBlockNodeItemId(node: DastBlockNode | DastInlineBlockNode): s
  * Get the block type ID directly from an inlined block node (when using nested: true).
  * Returns undefined if the block is not inlined or if the type cannot be determined.
  */
-export function getInlinedBlockTypeId(node: DastBlockNode | DastInlineBlockNode): string | undefined {
+export function getInlinedBlockTypeId(node: Block | InlineBlock): string | undefined {
   const item = node.item;
   if (item && typeof item === 'object') {
     const inlinedBlock = item as Record<string, unknown>;
@@ -124,7 +126,7 @@ export function getInlinedBlockTypeId(node: DastBlockNode | DastInlineBlockNode)
 /**
  * Check if a node is an inline item (record link) node
  */
-export function isInlineItemNode(node: DastNode): node is DastInlineItemNode {
+export function isInlineItemNode(node: Node): node is InlineItem {
   return node.type === 'inlineItem';
 }
 
@@ -180,8 +182,8 @@ export function findBlockRecordById(
  * @param path - Current path in the tree (for debugging/replacement)
  */
 export function traverseDast(
-  node: DastNode,
-  callback: (node: DastNode, path: (string | number)[]) => boolean | void,
+  node: Node,
+  callback: (node: Node, path: (string | number)[]) => boolean | void,
   path: (string | number)[] = []
 ): void {
   // Call callback for current node
@@ -191,7 +193,7 @@ export function traverseDast(
   // Recursively traverse children
   if (isNodeWithChildren(node)) {
     node.children.forEach((child, index) => {
-      traverseDast(child as DastNode, callback, [...path, 'children', index]);
+      traverseDast(child as Node, callback, [...path, 'children', index]);
     });
   }
 }
@@ -406,7 +408,7 @@ export function transformDastBlocksToLinks(
  * 
  * @param isRootLevel - Whether this node is a direct child of the document root
  */
-function replaceBlockNodesInTree<T extends DastNode>(
+function replaceBlockNodesInTree<T extends Node>(
   node: T,
   targetBlockTypeId: string,
   blocks: DastBlockRecord[],
@@ -471,14 +473,14 @@ function replaceBlockNodesInTree<T extends DastNode>(
 
   // If node has children, recursively process them
   if (isNodeWithChildren(node)) {
-    const clonedNode = { ...node } as DastNodeWithChildren;
+    const clonedNode = { ...node } as WithChildrenNode;
     
     // Check if this is the root node - its children are at root level
-    const childrenAreRootLevel = (node as DastNode).type === 'root';
+    const childrenAreRootLevel = (node as Node).type === 'root';
     
     clonedNode.children = clonedNode.children.map(child =>
       replaceBlockNodesInTree(
-        child as DastNode,
+        child as Node,
         targetBlockTypeId,
         blocks,
         mapping,
@@ -553,7 +555,7 @@ export function removeBlockNodesFromDast(
     targetBlockTypeId,
     result.blocks || [],
     blocksToRemove
-  ) as DastRootNode;
+  ) as Root;
 
   // Remove converted blocks from the blocks array
   if (result.blocks) {
@@ -585,7 +587,7 @@ export function removeBlockNodesFromDast(
  * Recursively removes block/inlineBlock nodes of a specific type from a tree.
  * Used for cleanup - removes the original block nodes (inlineItem nodes are already there from conversion).
  */
-function removeBlockNodesFromTree<T extends DastNode>(
+function removeBlockNodesFromTree<T extends Node>(
   node: T,
   targetBlockTypeId: string,
   blocks: DastBlockRecord[],
@@ -615,16 +617,16 @@ function removeBlockNodesFromTree<T extends DastNode>(
 
   // If node has children, recursively process them
   if (isNodeWithChildren(node)) {
-    const clonedNode = { ...node } as DastNodeWithChildren;
+    const clonedNode = { ...node } as WithChildrenNode;
     
     const newChildren = clonedNode.children
       .map(child => removeBlockNodesFromTree(
-        child as DastNode,
+        child as Node,
         targetBlockTypeId,
         blocks,
         blocksToRemove
       ))
-      .filter((child): child is DastNode => child !== null);
+      .filter((child): child is Node => child !== null);
     
     clonedNode.children = newChildren as typeof clonedNode.children;
     return clonedNode as T;
@@ -715,7 +717,7 @@ export function addInlineItemsAlongsideBlocks(
  * When fetching with nested: true, the item property can be expanded to a full object
  * instead of a string ID. DatoCMS expects string IDs when saving.
  */
-function normalizeNodeItemProperty<T extends DastNode>(node: T): T {
+function normalizeNodeItemProperty<T extends Node>(node: T): T {
   // Check if this is a node type that has an item property
   if (node.type === 'block' || node.type === 'inlineBlock' || node.type === 'inlineItem') {
     const nodeWithItem = node as T & { item: unknown };
@@ -751,7 +753,7 @@ function normalizeNodeItemProperty<T extends DastNode>(node: T): T {
  * For root-level 'block' nodes: inserts a new paragraph with inlineItem after the block
  * For 'inlineBlock' nodes: inserts an inlineItem directly after the inlineBlock
  */
-function addInlineItemsAlongsideBlocksInTree<T extends DastNode>(
+function addInlineItemsAlongsideBlocksInTree<T extends Node>(
   node: T,
   targetBlockTypeId: string,
   blocks: DastBlockRecord[],
@@ -760,14 +762,14 @@ function addInlineItemsAlongsideBlocksInTree<T extends DastNode>(
 ): T {
   // If node has children, process them and potentially insert new nodes
   if (isNodeWithChildren(node)) {
-    const clonedNode = { ...node } as DastNodeWithChildren;
-    const childrenAreRootLevel = (node as DastNode).type === 'root';
+    const clonedNode = { ...node } as WithChildrenNode;
+    const childrenAreRootLevel = (node as Node).type === 'root';
     
     // Process children and build new array with inserted inlineItem nodes
-    const newChildren: DastNode[] = [];
+    const newChildren: Node[] = [];
     
     for (const child of clonedNode.children) {
-      const childNode = child as DastNode;
+      const childNode = child as Node;
       
       // First, recursively process this child
       const processedChild = addInlineItemsAlongsideBlocksInTree(
@@ -819,14 +821,14 @@ function addInlineItemsAlongsideBlocksInTree<T extends DastNode>(
                 }
               ],
             };
-            newChildren.push(paragraphWithInlineItem as DastNode);
+            newChildren.push(paragraphWithInlineItem as Node);
           } else {
             // For inline context, just add the inlineItem
             const inlineItemNode = {
               type: 'inlineItem',
               item: newRecordId,
             };
-            newChildren.push(inlineItemNode as DastNode);
+            newChildren.push(inlineItemNode as Node);
           }
         }
       }
